@@ -265,10 +265,10 @@ anyway, since the filename is doing the real work.
 
 **What actually prevents a recurrence:** `make check-cross` vets amd64, arm64
 and riscv64. This class of bug is invisible to a native build, which is how it
-survived in the first place -- no test could have caught it, only a
+survived in the first place — no test could have caught it, only a
 cross-build.
 
-### Decision: three kernel files -- amd64, arm64, generic -- not amd64 and a `!amd64` catch-all
+### Decision: three kernel files — amd64, arm64, generic — not amd64 and a `!amd64` catch-all
 
 **Why:** arm64 reached the pure-Go fallback by omission, which reads as an
 oversight rather than a decision, and left nowhere obvious for a NEON kernel to
@@ -277,7 +277,7 @@ today and earns its place by being the file a NEON implementation drops into,
 already wired to `dotInt8Impl` and already registered with the cross-check.
 
 **Cost:** one duplicated three-line const block. Cheap enough that the
-alternative -- a comment in the catch-all saying "arm64 also lands here" --
+alternative — a comment in the catch-all saying "arm64 also lands here" --
 buys nothing.
 
 ### Decision: the cross-check compares every reachable kernel against `dotInt8Generic`, with a tolerance scaled by the sum of absolute terms
@@ -286,7 +286,7 @@ buys nothing.
 other path is an optimization of it. Per-architecture
 `kernel_variants_*_test.go` files register whatever SIMD kernels the build
 compiled in, so the test on arm64 is tautological today and becomes a real
-differential test the moment a NEON kernel is registered -- without anyone
+differential test the moment a NEON kernel is registered — without anyone
 having to remember to write it then.
 
 **Why not a tolerance relative to the result:** a dot product over mixed-sign
@@ -304,13 +304,13 @@ wrong kernels, not to certify bit-exactness, and the two are different goals.
 ### Decision: int8 quantization stays unconditional, including where no kernel can use it
 
 **Why:** on arm64 the cascade is off, so the int8 codes are computed at insert
-and never read -- a wasted pass and 1 byte per dimension, about 25% of the
+and never read — a wasted pass and 1 byte per dimension, about 25% of the
 vector footprint.
 
 Kept anyway, because **the stored format must not depend on the host's CPU
 features.** A snapshot written on a machine without AVX2 would otherwise differ
 in shape from one written on a machine with it, and a snapshot has to be
-portable across machines -- that is most of what it is for. Making the on-disk
+portable across machines — that is most of what it is for. Making the on-disk
 and in-memory layout a function of the CPU that happened to write it turns a
 portable artifact into a machine-specific one, which is a far worse property
 for a database than 25% of vector memory.
@@ -326,12 +326,12 @@ any build without a SIMD int8 kernel.
 **Why:** the kernel that belongs in `kernel_arm64.go` is a NEON `SDOT`/`UDOT`
 implementation. The instruction needs ARMv8.2-A dotprod, which the Ampere Altra
 parts MinDB is deployed on do have, so this is real work rather than a
-hypothetical -- it is just a different kind of work from making the build
+hypothetical — it is just a different kind of work from making the build
 portable, and mixing them would mean shipping neither until both are done.
 
 **Consequence, stated plainly:** until it lands, ARM deployments run the plain
 float32 scan. Correct, and identical in results, but without the int8
-bandwidth win -- so ARM latency should be read against the brute-force column
+bandwidth win — so ARM latency should be read against the brute-force column
 of the benchmarks, not the cascade column.
 
 ---

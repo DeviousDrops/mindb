@@ -47,8 +47,9 @@ func run(addr string, dims, capacity int, snapPath string, snapWait time.Duratio
 	if err != nil {
 		return err
 	}
+	stats := engine.Stats()
 	log.Printf("engine ready: dims=%d capacity=%d loaded=%d approx_ram=%s",
-		engine.Dims(), engine.Cap(), engine.Len(), humanBytes(estimateRAM(engine)))
+		stats.Dims, stats.Capacity, stats.Count, humanBytes(stats.MemoryBytes))
 
 	if snapWait > 0 && snapPath == "" {
 		return errors.New("-snapshot-interval requires -snapshot")
@@ -143,13 +144,7 @@ func startPeriodicSnapshots(engine *core.Engine, path string, every time.Duratio
 	return stop
 }
 
-// estimateRAM reports the bytes reserved for vector storage. Payloads are not
-// counted; they are caller-sized and allocated on demand.
-func estimateRAM(e *core.Engine) int64 {
-	// Per vector: dims*4 (float32) + dims*1 (int8 code) + 4 (scale) + 4 (residual).
-	return int64(e.Cap()) * (int64(e.Dims())*5 + 8)
-}
-
+// humanBytes formats a byte count for the startup log.
 func humanBytes(n int64) string {
 	const unit = 1024
 	if n < unit {

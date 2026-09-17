@@ -7,7 +7,9 @@ package math
 // emit the multiply-accumulate instructions that make int8 pay off. Taking the
 // cascade without a fast kernel would move a quarter of the bytes and still lose.
 //
-// Stage 3 replaces this with runtime AVX2 detection.
+// The value is set per architecture at build time: amd64 detects AVX2+FMA at
+// init and falls back if they are absent, arm64 and everything else are pure
+// Go. See kernel_amd64.go, kernel_arm64.go, kernel_generic.go.
 func HasFastInt8() bool { return hasFastInt8 }
 
 // KernelName reports which DotInt8 implementation is active, for startup

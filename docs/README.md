@@ -76,6 +76,14 @@ Note the int8 row: **4x less data, twice the time.** Pure Go cannot express the
 instruction that makes int8 fast, which is why this project has assembly — and why the
 assembly lives on the int8 path rather than the float32 one.
 
+**On ARM (arm64) the cascade is off.** There is no NEON int8 kernel yet, so
+`HasFastInt8()` is false and searches run the brute-force float32 scan. Results are
+identical either way — the cascade is an optimization, not an approximation — but ARM
+latency should be read against the brute-force row above, not the cascade figure. The
+server logs which kernel is live at startup:
+`kernel: name=pure-go fast_int8=false goarch=arm64`. See
+[`DECISIONS.md`](../DECISIONS.md) under "Portability".
+
 **Where sub-millisecond becomes real** (projected from `bytes ÷ bandwidth`):
 
 | memory bandwidth | MinDB cascade | brute force |
@@ -185,9 +193,10 @@ compression buys a full scan followed by a full rescore. Measured, then deleted.
 **Memory:** `capacity × dims × 5 bytes` + payloads — ≈368 MiB at 100k × 768, allocated
 eagerly at boot so the process fails immediately rather than under load.
 
-**Requirements:** Go 1.21+, any 64-bit platform. AVX2 + FMA3 for the speedup (Haswell 2013+
-/ Zen 2017+); without it MinDB runs correctly on a pure-Go fallback and warns loudly at
-startup.
+**Requirements:** Go 1.21+, amd64 or arm64 (and anything else Go targets, on the pure-Go
+fallback). AVX2 + FMA3 for the speedup (Haswell 2013+ / Zen 2017+); without it MinDB runs
+correctly on the fallback and logs the active kernel at startup. arm64 is on the fallback
+today — see the note under the benchmarks.
 
 ---
 

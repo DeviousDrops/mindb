@@ -199,7 +199,7 @@ allocation, calling convention, stack frame size) and hard to review. Avo
 (`github.com/mmcloughlin/avo`) is a Go DSL that emits Plan9 assembly plus a
 matching Go stub, so the source of truth
 (`pkg/math/avo/asm.go`) is normal, readable Go, and the generated
-`pkg/math/dotint8_avx2_amd64.s` / `..._stub.go` are committed artifacts
+`pkg/math/dotint8_avx2_amd64.s` / `dotint8_avx2_stub_amd64.go` are committed artifacts
 regenerated via `go run asm.go -out ... -stubs ...`.
 
 **Why AVX2 + FMA3, not AVX-512:** AVX2 is available on every x86-64 CPU since
@@ -241,6 +241,100 @@ place.
 
 ---
 
+## Portability
+
+### Decision: the generated AVX2 stub is constrained by filename *and* an explicit build tag
+
+**Why:** the stub was called `dotint8_avx2_amd64_stub.go`, which looks
+architecture-constrained and is not. Go derives the implicit `GOARCH`
+constraint from the filename component immediately before `.go`, so `_amd64`
+in the middle of the name does nothing: the bodyless `func dotInt8AVX2`
+declaration was compiled on every architecture, with no `.s` file to satisfy
+it, and `GOARCH=arm64 go build ./...` failed with `missing function body`.
+MinDB did not build for its own deploy target.
+
+Renamed to `dotint8_avx2_stub_amd64.go`, which does carry the constraint, plus
+an explicit `//go:build amd64`. The filename alone is sufficient; the tag is
+there because the filename convention is exactly what failed to be noticed the
+first time, and a tag is legible to a reader who does not have the rule
+memorized.
+
+**Cost:** avo does not emit build tags, so `make asm` re-adds it after
+regenerating. A bare `go generate` drops the tag and keeps the build correct
+anyway, since the filename is doing the real work.
+
+**What actually prevents a recurrence:** `make check-cross` vets amd64, arm64
+and riscv64. This class of bug is invisible to a native build, which is how it
+survived in the first place — no test could have caught it, only a
+cross-build.
+
+### Decision: three kernel files — amd64, arm64, generic — not amd64 and a `!amd64` catch-all
+
+**Why:** arm64 reached the pure-Go fallback by omission, which reads as an
+oversight rather than a decision, and left nowhere obvious for a NEON kernel to
+go. `kernel_arm64.go` is byte-identical in behaviour to `kernel_generic.go`
+today and earns its place by being the file a NEON implementation drops into,
+already wired to `dotInt8Impl` and already registered with the cross-check.
+
+**Cost:** one duplicated three-line const block. Cheap enough that the
+alternative — a comment in the catch-all saying "arm64 also lands here" --
+buys nothing.
+
+### Decision: the cross-check compares every reachable kernel against `dotInt8Generic`, with a tolerance scaled by the sum of absolute terms
+
+**Why:** `dotInt8Generic` is the oracle: it defines a correct result and every
+other path is an optimization of it. Per-architecture
+`kernel_variants_*_test.go` files register whatever SIMD kernels the build
+compiled in, so the test on arm64 is tautological today and becomes a real
+differential test the moment a NEON kernel is registered — without anyone
+having to remember to write it then.
+
+**Why not a tolerance relative to the result:** a dot product over mixed-sign
+terms cancels, so the result can be near zero while the terms summed to reach
+it are large. A result-relative bound would then demand precision no float32
+accumulation can deliver. The error scales with `sum |q_i * code_i|`, so the
+bound does too: `1e-5 * sumAbs + 1e-6`, roughly twice the worst case for the
+8-accumulator pure-Go loop at a 2^-24 unit roundoff. Measured headroom is
+~2000x over the real AVX2-vs-generic margin at dims=768, while zeroing a single
+term is still caught by ~100x.
+
+**Cost:** the tolerance is loose in absolute terms. It is calibrated to catch
+wrong kernels, not to certify bit-exactness, and the two are different goals.
+
+### Decision: int8 quantization stays unconditional, including where no kernel can use it
+
+**Why:** on arm64 the cascade is off, so the int8 codes are computed at insert
+and never read — a wasted pass and 1 byte per dimension, about 25% of the
+vector footprint.
+
+Kept anyway, because **the stored format must not depend on the host's CPU
+features.** A snapshot written on a machine without AVX2 would otherwise differ
+in shape from one written on a machine with it, and a snapshot has to be
+portable across machines — that is most of what it is for. Making the on-disk
+and in-memory layout a function of the CPU that happened to write it turns a
+portable artifact into a machine-specific one, which is a far worse property
+for a database than 25% of vector memory.
+
+It also means switching the cascade on, once a NEON kernel exists, needs no
+reindex and no migration: the codes are already there.
+
+**Cost:** ~25% of vector memory and one quantization pass per insert, unused on
+any build without a SIMD int8 kernel.
+
+### Decision: a NEON int8 kernel is a separate track, not part of this work
+
+**Why:** the kernel that belongs in `kernel_arm64.go` is a NEON `SDOT`/`UDOT`
+implementation. The instruction needs ARMv8.2-A dotprod, which the Ampere Altra
+parts MinDB is deployed on do have, so this is real work rather than a
+hypothetical — it is just a different kind of work from making the build
+portable, and mixing them would mean shipping neither until both are done.
+
+**Consequence, stated plainly:** until it lands, ARM deployments run the plain
+float32 scan. Correct, and identical in results, but without the int8
+bandwidth win — so ARM latency should be read against the brute-force column
+of the benchmarks, not the cascade column.
+
+---
 ## Durability
 
 ### Decision: `tmp → fsync → rename → fsync(parent dir)`, not a direct overwrite

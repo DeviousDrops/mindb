@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 
 	"github.com/typicallhavok/mindb/pkg/api"
 	"github.com/typicallhavok/mindb/pkg/core"
+	"github.com/typicallhavok/mindb/pkg/math"
 	"github.com/typicallhavok/mindb/pkg/mindb"
 )
 
@@ -36,6 +38,11 @@ func main() {
 }
 
 func run(addr string, dims, capacity int, snapPath string, snapWait time.Duration) error {
+	// The kernel decides whether the cascade runs at all, so which one is live
+	// is the first thing to know when a deployment's search latency looks wrong.
+	log.Printf("kernel: name=%s fast_int8=%t goarch=%s",
+		math.KernelName(), math.HasFastInt8(), runtime.GOARCH)
+
 	engine, err := open(dims, capacity, snapPath)
 	if err != nil {
 		return err

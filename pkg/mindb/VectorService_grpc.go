@@ -4,167 +4,289 @@
 
 package mindb
 
-import "github.com/google/flatbuffers/go"
-
 import (
-  context "context"
-  grpc "google.golang.org/grpc"
+	context "context"
+	flatbuffers "github.com/google/flatbuffers/go"
+	grpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Client API for VectorService service
-type VectorServiceClient interface{
-  Insert(ctx context.Context, in *flatbuffers.Builder, 
-  	opts... grpc.CallOption) (* InsertResponse, error)  
-  Search(ctx context.Context, in *flatbuffers.Builder, 
-  	opts... grpc.CallOption) (* SearchResponse, error)  
-  Delete(ctx context.Context, in *flatbuffers.Builder, 
-  	opts... grpc.CallOption) (* DeleteResponse, error)  
-  Snapshot(ctx context.Context, in *flatbuffers.Builder, 
-  	opts... grpc.CallOption) (* SnapshotResponse, error)  
+type VectorServiceClient interface {
+	Insert(ctx context.Context, in *flatbuffers.Builder,
+		opts ...grpc.CallOption) (*InsertResponse, error)
+	Search(ctx context.Context, in *flatbuffers.Builder,
+		opts ...grpc.CallOption) (*SearchResponse, error)
+	Delete(ctx context.Context, in *flatbuffers.Builder,
+		opts ...grpc.CallOption) (*DeleteResponse, error)
+	Snapshot(ctx context.Context, in *flatbuffers.Builder,
+		opts ...grpc.CallOption) (*SnapshotResponse, error)
+	Get(ctx context.Context, in *flatbuffers.Builder,
+		opts ...grpc.CallOption) (*GetResponse, error)
+	Stats(ctx context.Context, in *flatbuffers.Builder,
+		opts ...grpc.CallOption) (*StatsResponse, error)
 }
 
 type vectorServiceClient struct {
-  cc *grpc.ClientConn
+	cc grpc.ClientConnInterface
 }
 
-func NewVectorServiceClient(cc *grpc.ClientConn) VectorServiceClient {
-  return &vectorServiceClient{cc}
+func NewVectorServiceClient(cc grpc.ClientConnInterface) VectorServiceClient {
+	return &vectorServiceClient{cc}
 }
 
-func (c *vectorServiceClient) Insert(ctx context.Context, in *flatbuffers.Builder, 
-	opts... grpc.CallOption) (* InsertResponse, error) {
-  out := new(InsertResponse)
-  err := grpc.Invoke(ctx, "/mindb.VectorService/Insert", in, out, c.cc, opts...)
-  if err != nil { return nil, err }
-  return out, nil
+func (c *vectorServiceClient) Insert(ctx context.Context, in *flatbuffers.Builder,
+	opts ...grpc.CallOption) (*InsertResponse, error) {
+	out := new(InsertResponse)
+	err := c.cc.Invoke(ctx, "/mindb.VectorService/Insert", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
-func (c *vectorServiceClient) Search(ctx context.Context, in *flatbuffers.Builder, 
-	opts... grpc.CallOption) (* SearchResponse, error) {
-  out := new(SearchResponse)
-  err := grpc.Invoke(ctx, "/mindb.VectorService/Search", in, out, c.cc, opts...)
-  if err != nil { return nil, err }
-  return out, nil
+func (c *vectorServiceClient) Search(ctx context.Context, in *flatbuffers.Builder,
+	opts ...grpc.CallOption) (*SearchResponse, error) {
+	out := new(SearchResponse)
+	err := c.cc.Invoke(ctx, "/mindb.VectorService/Search", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
-func (c *vectorServiceClient) Delete(ctx context.Context, in *flatbuffers.Builder, 
-	opts... grpc.CallOption) (* DeleteResponse, error) {
-  out := new(DeleteResponse)
-  err := grpc.Invoke(ctx, "/mindb.VectorService/Delete", in, out, c.cc, opts...)
-  if err != nil { return nil, err }
-  return out, nil
+func (c *vectorServiceClient) Delete(ctx context.Context, in *flatbuffers.Builder,
+	opts ...grpc.CallOption) (*DeleteResponse, error) {
+	out := new(DeleteResponse)
+	err := c.cc.Invoke(ctx, "/mindb.VectorService/Delete", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
-func (c *vectorServiceClient) Snapshot(ctx context.Context, in *flatbuffers.Builder, 
-	opts... grpc.CallOption) (* SnapshotResponse, error) {
-  out := new(SnapshotResponse)
-  err := grpc.Invoke(ctx, "/mindb.VectorService/Snapshot", in, out, c.cc, opts...)
-  if err != nil { return nil, err }
-  return out, nil
+func (c *vectorServiceClient) Snapshot(ctx context.Context, in *flatbuffers.Builder,
+	opts ...grpc.CallOption) (*SnapshotResponse, error) {
+	out := new(SnapshotResponse)
+	err := c.cc.Invoke(ctx, "/mindb.VectorService/Snapshot", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *vectorServiceClient) Get(ctx context.Context, in *flatbuffers.Builder,
+	opts ...grpc.CallOption) (*GetResponse, error) {
+	out := new(GetResponse)
+	err := c.cc.Invoke(ctx, "/mindb.VectorService/Get", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *vectorServiceClient) Stats(ctx context.Context, in *flatbuffers.Builder,
+	opts ...grpc.CallOption) (*StatsResponse, error) {
+	out := new(StatsResponse)
+	err := c.cc.Invoke(ctx, "/mindb.VectorService/Stats", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Server API for VectorService service
 type VectorServiceServer interface {
-  Insert(context.Context, *InsertRequest) (*flatbuffers.Builder, error)  
-  Search(context.Context, *SearchRequest) (*flatbuffers.Builder, error)  
-  Delete(context.Context, *DeleteRequest) (*flatbuffers.Builder, error)  
-  Snapshot(context.Context, *SnapshotRequest) (*flatbuffers.Builder, error)  
+	Insert(context.Context, *InsertRequest) (*flatbuffers.Builder, error)
+	Search(context.Context, *SearchRequest) (*flatbuffers.Builder, error)
+	Delete(context.Context, *DeleteRequest) (*flatbuffers.Builder, error)
+	Snapshot(context.Context, *SnapshotRequest) (*flatbuffers.Builder, error)
+	Get(context.Context, *GetRequest) (*flatbuffers.Builder, error)
+	Stats(context.Context, *StatsRequest) (*flatbuffers.Builder, error)
+	mustEmbedUnimplementedVectorServiceServer()
 }
 
-func RegisterVectorServiceServer(s *grpc.Server, srv VectorServiceServer) {
-  s.RegisterService(&_VectorService_serviceDesc, srv)
+type UnimplementedVectorServiceServer struct {
+}
+
+func (UnimplementedVectorServiceServer) Insert(context.Context, *InsertRequest) (*flatbuffers.Builder, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Insert not implemented")
+}
+
+func (UnimplementedVectorServiceServer) Search(context.Context, *SearchRequest) (*flatbuffers.Builder, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Search not implemented")
+}
+
+func (UnimplementedVectorServiceServer) Delete(context.Context, *DeleteRequest) (*flatbuffers.Builder, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Delete not implemented")
+}
+
+func (UnimplementedVectorServiceServer) Snapshot(context.Context, *SnapshotRequest) (*flatbuffers.Builder, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Snapshot not implemented")
+}
+
+func (UnimplementedVectorServiceServer) Get(context.Context, *GetRequest) (*flatbuffers.Builder, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Get not implemented")
+}
+
+func (UnimplementedVectorServiceServer) Stats(context.Context, *StatsRequest) (*flatbuffers.Builder, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Stats not implemented")
+}
+
+func (UnimplementedVectorServiceServer) mustEmbedUnimplementedVectorServiceServer() {}
+
+type UnsafeVectorServiceServer interface {
+	mustEmbedUnimplementedVectorServiceServer()
+}
+
+func RegisterVectorServiceServer(s grpc.ServiceRegistrar, srv VectorServiceServer) {
+	s.RegisterService(&_VectorService_serviceDesc, srv)
 }
 
 func _VectorService_Insert_Handler(srv interface{}, ctx context.Context,
 	dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-  in := new(InsertRequest)
-  if err := dec(in); err != nil { return nil, err }
-  if interceptor == nil { return srv.(VectorServiceServer).Insert(ctx, in) }
-  info := &grpc.UnaryServerInfo{
-    Server: srv,
-    FullMethod: "/mindb.VectorService/Insert",
-  }
-  
-  handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-    return srv.(VectorServiceServer).Insert(ctx, req.(* InsertRequest))
-  }
-  return interceptor(ctx, in, info, handler)
+	in := new(InsertRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VectorServiceServer).Insert(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/mindb.VectorService/Insert",
+	}
+
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VectorServiceServer).Insert(ctx, req.(*InsertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
-
-
 func _VectorService_Search_Handler(srv interface{}, ctx context.Context,
 	dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-  in := new(SearchRequest)
-  if err := dec(in); err != nil { return nil, err }
-  if interceptor == nil { return srv.(VectorServiceServer).Search(ctx, in) }
-  info := &grpc.UnaryServerInfo{
-    Server: srv,
-    FullMethod: "/mindb.VectorService/Search",
-  }
-  
-  handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-    return srv.(VectorServiceServer).Search(ctx, req.(* SearchRequest))
-  }
-  return interceptor(ctx, in, info, handler)
+	in := new(SearchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VectorServiceServer).Search(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/mindb.VectorService/Search",
+	}
+
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VectorServiceServer).Search(ctx, req.(*SearchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
-
-
 func _VectorService_Delete_Handler(srv interface{}, ctx context.Context,
 	dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-  in := new(DeleteRequest)
-  if err := dec(in); err != nil { return nil, err }
-  if interceptor == nil { return srv.(VectorServiceServer).Delete(ctx, in) }
-  info := &grpc.UnaryServerInfo{
-    Server: srv,
-    FullMethod: "/mindb.VectorService/Delete",
-  }
-  
-  handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-    return srv.(VectorServiceServer).Delete(ctx, req.(* DeleteRequest))
-  }
-  return interceptor(ctx, in, info, handler)
+	in := new(DeleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VectorServiceServer).Delete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/mindb.VectorService/Delete",
+	}
+
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VectorServiceServer).Delete(ctx, req.(*DeleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
-
-
 func _VectorService_Snapshot_Handler(srv interface{}, ctx context.Context,
 	dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-  in := new(SnapshotRequest)
-  if err := dec(in); err != nil { return nil, err }
-  if interceptor == nil { return srv.(VectorServiceServer).Snapshot(ctx, in) }
-  info := &grpc.UnaryServerInfo{
-    Server: srv,
-    FullMethod: "/mindb.VectorService/Snapshot",
-  }
-  
-  handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-    return srv.(VectorServiceServer).Snapshot(ctx, req.(* SnapshotRequest))
-  }
-  return interceptor(ctx, in, info, handler)
+	in := new(SnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VectorServiceServer).Snapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/mindb.VectorService/Snapshot",
+	}
+
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VectorServiceServer).Snapshot(ctx, req.(*SnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
+func _VectorService_Get_Handler(srv interface{}, ctx context.Context,
+	dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VectorServiceServer).Get(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/mindb.VectorService/Get",
+	}
 
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VectorServiceServer).Get(ctx, req.(*GetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+func _VectorService_Stats_Handler(srv interface{}, ctx context.Context,
+	dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VectorServiceServer).Stats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/mindb.VectorService/Stats",
+	}
 
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VectorServiceServer).Stats(ctx, req.(*StatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
 var _VectorService_serviceDesc = grpc.ServiceDesc{
-  ServiceName: "mindb.VectorService",
-  HandlerType: (*VectorServiceServer)(nil),
-  Methods: []grpc.MethodDesc{
-    {
-      MethodName: "Insert",
-      Handler: _VectorService_Insert_Handler, 
-    },
-    {
-      MethodName: "Search",
-      Handler: _VectorService_Search_Handler, 
-    },
-    {
-      MethodName: "Delete",
-      Handler: _VectorService_Delete_Handler, 
-    },
-    {
-      MethodName: "Snapshot",
-      Handler: _VectorService_Snapshot_Handler, 
-    },
-  },
-  Streams: []grpc.StreamDesc{
-  },
+	ServiceName: "mindb.VectorService",
+	HandlerType: (*VectorServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Insert",
+			Handler:    _VectorService_Insert_Handler,
+		},
+		{
+			MethodName: "Search",
+			Handler:    _VectorService_Search_Handler,
+		},
+		{
+			MethodName: "Delete",
+			Handler:    _VectorService_Delete_Handler,
+		},
+		{
+			MethodName: "Snapshot",
+			Handler:    _VectorService_Snapshot_Handler,
+		},
+		{
+			MethodName: "Get",
+			Handler:    _VectorService_Get_Handler,
+		},
+		{
+			MethodName: "Stats",
+			Handler:    _VectorService_Stats_Handler,
+		},
+	},
+	Streams: []grpc.StreamDesc{
+	},
 }
-

@@ -43,9 +43,37 @@ table SnapshotResponse {
   message: string;
 }
 
+// Get returns the stored vectors for the given ids, in request order. Ids that
+// are absent are omitted, so vectors may be shorter than ids and is not
+// positionally aligned with it. Reuses Vector, so a Get result is wire
+// identical to an Insert input.
+table GetRequest {
+  ids: [string];
+}
+table GetResponse {
+  vectors: [Vector];
+}
+
+// Stats reports engine state and which search kernel is live. memory_bytes is
+// reserved rather than used: allocation is eager. payload_bytes is the live
+// total, payloads being the only thing allocated on demand.
+table StatsRequest {}
+table StatsResponse {
+  vector_count: uint32;
+  capacity: uint32;
+  dims: uint32;
+  memory_bytes: uint64;
+  payload_bytes: uint64;
+  kernel_name: string;
+  fast_int8: bool;
+  goarch: string;
+}
+
 rpc_service VectorService {
   Insert(InsertRequest): InsertResponse;
   Search(SearchRequest): SearchResponse;
   Delete(DeleteRequest): DeleteResponse;
   Snapshot(SnapshotRequest): SnapshotResponse;
+  Get(GetRequest): GetResponse;
+  Stats(StatsRequest): StatsResponse;
 }

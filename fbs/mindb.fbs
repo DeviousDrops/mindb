@@ -67,6 +67,12 @@ table StatsResponse {
   kernel_name: string;
   fast_int8: bool;
   goarch: string;
+
+  // Whether writes are being logged, and whether every record so far
+  // reached the disk. wal_healthy goes false once and stays there; it is
+  // what a readiness probe watches.
+  wal_enabled: bool;
+  wal_healthy: bool;
 }
 
 rpc_service VectorService {

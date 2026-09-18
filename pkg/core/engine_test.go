@@ -184,10 +184,10 @@ func TestDeleteRemovesFromResults(t *testing.T) {
 		}
 	}
 
-	if !e.Delete("v0") {
+	if !mustDelete(t, e, "v0") {
 		t.Fatal("Delete reported the id was absent")
 	}
-	if e.Delete("v0") {
+	if mustDelete(t, e, "v0") {
 		t.Error("second Delete of the same id reported success")
 	}
 	if e.Len() != 2 {
@@ -219,7 +219,7 @@ func TestDeletedSlotIsReused(t *testing.T) {
 		t.Fatal("insert past capacity succeeded")
 	}
 
-	e.Delete("a")
+	mustDelete(t, e, "a")
 	if err := e.Insert("c", []float32{0, 0, 1, 0}, nil); err != nil {
 		t.Fatalf("slot was not reused after delete: %v", err)
 	}
@@ -339,9 +339,9 @@ func TestConcurrentHammer(t *testing.T) {
 				// a writer can legitimately lose the race for the last slot.
 				_ = e.Insert(id, randVec(r, dims), []byte(id))
 				if i%3 == 0 {
-					e.Delete(id)
+					_, _ = e.Delete(id)
 				}
-				e.Delete(fmt.Sprintf("seed%04d", r.Intn(500)))
+				_, _ = e.Delete(fmt.Sprintf("seed%04d", r.Intn(500)))
 			}
 		}(w)
 	}

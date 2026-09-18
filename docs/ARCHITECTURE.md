@@ -235,6 +235,13 @@ still run fully in parallel, because RLock is shared.
 The one real cost is that a writer waits behind an in-flight scan. For a read-dominated
 sidecar that is the correct trade — and it is *documented* rather than pretended away.
 
+The write-ahead log added a second mutex, and only one: a plain `sync.Mutex` held across
+apply-then-append, so the order records reach the log is the order they reached the slab.
+Two writers updating the same id could otherwise land in the slab in one order and in the
+log in the other, and a replay would then rebuild a database that disagrees with the one
+that crashed. It is deliberately *not* held across the `fsync` — that is where all the
+time goes, and releasing it there is what makes group commit possible at all.
+
 ---
 
 ## Layout
@@ -276,12 +283,12 @@ immediately, rather than failing under load.
 
 **This is a flat slab, and it is worth naming as one.** There are no segments, no write
 buffer and no tombstones: one set of parallel arrays, an id map from external ID to slot,
-a free list that recycles deleted slots, and whole-file snapshots. That is what makes a
-scan sequential and deletes compaction entirely, and it is also why every write takes the
-same lock every reader uses, and why nothing survives a crash between snapshots. A
-write-ahead log and then a segmented store are the answers to those two, in that order,
-and both are separate tracks with their own specs — see the roadmap. Until they land,
-read this section as the whole of MinDB's storage layer, because it is.
+a free list that recycles deleted slots, whole-file snapshots, and an append-only log
+covering the gap between them. That is what makes a scan sequential and deletes
+compaction entirely, and it is also why every write takes the same lock every reader
+uses, and why the index cannot grow past the capacity reserved at boot. A segmented store
+is the answer to both, and it is its own track with its own spec — see the roadmap. Until
+it lands, read this section as the whole of MinDB's storage layer, because it is.
 
 ---
 
@@ -303,6 +310,34 @@ load.** Persisting them would grow the file ~25% (366 MB vs 293 MB at 100k × 76
 re-quantizing costs ~300 ms — noise next to reading 293 MB off disk. More importantly it
 decouples the on-disk format from the quantization scheme, so changing how codes are built
 does not invalidate every existing snapshot in the field.
+
+**A snapshot on its own loses every write taken since it was written, so there is a log.**
+An operation is acknowledged only once its record is on disk; what a snapshot does not
+cover is replayed at the next boot. Three things about it are worth stating here rather
+than leaving to the code:
+
+*It is a redo log, not write-ahead ordering.* The slab is updated first and the record
+appended second — Redis's AOF, not ARIES. Every acknowledged write still survives a crash;
+what differs is that an unacknowledged one can be visible to a reader before it is durable.
+True log-before-apply would mean reserving the slot before the append, which is a different
+write path rather than a reordering of this one.
+
+*Concurrent writers share one `fsync`.* The writer that arrives while no sync is in flight
+flushes everything buffered, notes how far that reaches, and syncs with the lock released,
+so writers arriving meanwhile land in the next batch. Nothing is timer-driven: a lone
+writer syncs immediately and pays nothing extra, and under load the batch size is whatever
+the disk's own latency produces. Measured on an NVMe laptop, 64 concurrent writers cost
+~11 µs each against ~230 µs for one `fsync` per write.
+
+*A failed `fsync` is permanent.* On Linux it may already have dropped the dirty pages it
+could not write, so the data is gone and a retry returning success proves nothing. The log
+is marked unhealthy and never recovers, writes are refused from then on, and the process
+keeps serving reads while reporting `NOT_SERVING` so an orchestrator drains it. Halting
+instead would throw away an in-memory engine that is still entirely correct.
+
+Snapshots and the log are tied together by a run id: every `Save` mints one, stamps it into
+the segment it rotates to, and records it beside the snapshot, so restoring an old snapshot
+next to a live log refuses to start instead of replaying history the snapshot never had.
 
 ---
 
@@ -377,7 +412,7 @@ accident.
 | — | portability: kernels split by build tag, arm64 on the pure-Go path | done |
 | — | `Get` and `Stats` RPCs | done |
 | — | NEON `SDOT` int8 kernel for arm64 | planned |
-| — | write-ahead log: replay onto the slab at boot, truncate on snapshot | planned |
+| — | write-ahead log: replay onto the slab at boot, retire segments on snapshot | done |
 | — | segmented store: write buffer, immutable segments, tombstones | planned |
 
 Each stage ships something working. Stage 2 is expected to be *slower* than stage 1 — its

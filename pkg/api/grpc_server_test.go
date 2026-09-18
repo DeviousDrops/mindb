@@ -574,4 +574,39 @@ func TestStatsReportsEngineAndKernel(t *testing.T) {
 	if string(resp.Goarch()) != want.GoArch {
 		t.Errorf("goarch = %q, want %q", resp.Goarch(), want.GoArch)
 	}
+
+	// An engine with no log reports healthy, because there is nothing that can
+	// have failed. Readiness has to read wal_enabled first.
+	if resp.WalEnabled() {
+		t.Error("wal_enabled = true, want false for an engine with no log")
+	}
+	if !resp.WalHealthy() {
+		t.Error("wal_healthy = false, want true for an engine with no log")
+	}
+}
+
+func TestStatsReportsWALState(t *testing.T) {
+	dir := t.TempDir()
+	engine, _, err := core.Open(core.Options{
+		Dims:     testDims,
+		Capacity: 64,
+		Snapshot: filepath.Join(dir, "snap.mindb"),
+		WAL:      filepath.Join(dir, "snap.mindb.wal"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { engine.Close() })
+
+	client := startServer(t, engine, "")
+	resp, err := client.Stats(ctxWithTimeout(t), buildStats())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.WalEnabled() {
+		t.Error("wal_enabled = false, want true")
+	}
+	if !resp.WalHealthy() {
+		t.Error("wal_healthy = false on a log that has not failed")
+	}
 }

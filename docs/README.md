@@ -188,6 +188,9 @@ compression buys a full scan followed by a full rescore. Measured, then deleted.
 - **Bounded min-heap top-k**, pooled, one per worker, merged at the end.
 - **Parallel scan** across `GOMAXPROCS`.
 - **Crash-consistent snapshots** — `tmp → fsync → rename → fsync(parent dir)` with a CRC32.
+- **Write-ahead log** — a write is acknowledged only once its record is on disk, with
+  group commit so concurrent writers share one `fsync`. On by default wherever
+  snapshots are.
 - **Arbitrary byte-slice payloads** returned on search.
 
 **Memory:** `capacity × dims × 5 bytes` + payloads — ≈368 MiB at 100k × 768, allocated
@@ -239,6 +242,12 @@ deployment is actually running* is otherwise visible only in the startup log of
 a process nobody has a terminal for, and on ARM it is the difference between the
 cascade and a brute-force scan.
 
+It also reports `wal_enabled` and `wal_healthy`. The second is the readiness
+signal: a node whose log has faulted still answers searches correctly, so nothing
+about liveness catches it, and this is what says stop sending it writes. The
+server drives a `grpc.health.v1.Health` service off the same state, on its own
+port.
+
 **On "zero-copy":** half of it is real, and it's worth being precise about which half.
 *Reading* a request genuinely is zero-copy — the buffer arrives little-endian and 4-byte
 aligned, so the query vector is reinterpreted in place rather than read through
@@ -256,19 +265,20 @@ change that.
 | 3 | Avo-generated AVX2 int8 kernel | done |
 | 4 | rotated 1-bit tier (RaBitQ-style) | deferred, research-risk |
 | — | NEON int8 kernel for arm64 | planned |
-| — | write-ahead log | planned |
+| — | write-ahead log | done |
 | — | segmented store: write buffer, immutable segments, tombstones | planned |
 
 Stage 2 is expected to be *slower* than stage 1. Its job is to prove correctness before
 any assembly exists to blame for a wrong answer.
 
 **On the segmented store:** MinDB today is a flat slab — parallel arrays sized at
-boot, an id map, a free list that recycles deleted slots, and whole-file snapshots.
-That is a real design, not a stopgap: it makes a scan sequential and deletes
-compaction entirely. What it does not give is durability between snapshots, or a
-write path that does not contend with readers on a single lock. Those are what a
-WAL and then a segmented store are for, and they are separate tracks with their
-own specs rather than something to bolt onto the slab.
+boot, an id map, a free list that recycles deleted slots, whole-file snapshots and
+a log that covers the gap between them. That is a real design, not a stopgap: it
+makes a scan sequential and deletes compaction entirely. What it does not give is
+a write path that does not contend with readers on a single lock, or an index that
+grows past the capacity reserved at boot. Those are what a segmented store is for,
+and it is its own track with its own spec rather than something to bolt onto the
+slab.
 
 ---
 

@@ -115,7 +115,7 @@ func TestCascadeIsExactWithDeletes(t *testing.T) {
 	// Holes in the slot array plus a populated free list: the cascade's two
 	// passes must agree with each other about which slots are live.
 	for i := 0; i < n; i += 3 {
-		e.Delete(fmt.Sprintf("v%06d", i))
+		_, _ = e.Delete(fmt.Sprintf("v%06d", i))
 	}
 	for i := 0; i < 200; i++ {
 		if err := e.Insert(fmt.Sprintf("new%04d", i), clusteredVec(r, centroids, 0.1), nil); err != nil {

@@ -129,8 +129,32 @@ func (rcv *StatsResponse) Goarch() []byte {
 	return nil
 }
 
+func (rcv *StatsResponse) WalEnabled() bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(20))
+	if o != 0 {
+		return rcv._tab.GetBool(o + rcv._tab.Pos)
+	}
+	return false
+}
+
+func (rcv *StatsResponse) MutateWalEnabled(n bool) bool {
+	return rcv._tab.MutateBoolSlot(20, n)
+}
+
+func (rcv *StatsResponse) WalHealthy() bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(22))
+	if o != 0 {
+		return rcv._tab.GetBool(o + rcv._tab.Pos)
+	}
+	return false
+}
+
+func (rcv *StatsResponse) MutateWalHealthy(n bool) bool {
+	return rcv._tab.MutateBoolSlot(22, n)
+}
+
 func StatsResponseStart(builder *flatbuffers.Builder) {
-	builder.StartObject(8)
+	builder.StartObject(10)
 }
 func StatsResponseAddVectorCount(builder *flatbuffers.Builder, vectorCount uint32) {
 	builder.PrependUint32Slot(0, vectorCount, 0)
@@ -155,6 +179,12 @@ func StatsResponseAddFastInt8(builder *flatbuffers.Builder, fastInt8 bool) {
 }
 func StatsResponseAddGoarch(builder *flatbuffers.Builder, goarch flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(7, flatbuffers.UOffsetT(goarch), 0)
+}
+func StatsResponseAddWalEnabled(builder *flatbuffers.Builder, walEnabled bool) {
+	builder.PrependBoolSlot(8, walEnabled, false)
+}
+func StatsResponseAddWalHealthy(builder *flatbuffers.Builder, walHealthy bool) {
+	builder.PrependBoolSlot(9, walHealthy, false)
 }
 func StatsResponseEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

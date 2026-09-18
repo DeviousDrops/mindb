@@ -214,8 +214,30 @@ rpc_service VectorService {
   Search(SearchRequest):     SearchResponse;
   Delete(DeleteRequest):     DeleteResponse;
   Snapshot(SnapshotRequest): SnapshotResponse;
+  Get(GetRequest):           GetResponse;
+  Stats(StatsRequest):       StatsResponse;
 }
 ```
+
+
+**`Get` is a point lookup, not a search.** It returns the stored record for each
+id in request order; ids that are absent — never inserted, or deleted — are
+omitted rather than reported as an error, so one unknown id cannot fail a batch.
+The response is therefore **not positionally aligned with the request**: match on
+id, not on index.
+
+What comes back is the unit-normalized vector, because that is what `Insert`
+stored. Normalization discards the original magnitude and MinDB does not keep a
+copy, so `Get` returns `v/|v|`, not `v`. The values are exact — they come from
+the float32 slab, not from the int8 codes, which only ever prune search
+candidates.
+
+**`Stats` reports engine state and which kernel is live** — vector count,
+capacity, dims, reserved bytes, live payload bytes, plus `kernel_name`,
+`fast_int8` and `goarch`. The last three exist because *which search path a
+deployment is actually running* is otherwise visible only in the startup log of
+a process nobody has a terminal for, and on ARM it is the difference between the
+cascade and a brute-force scan.
 
 **On "zero-copy":** half of it is real, and it's worth being precise about which half.
 *Reading* a request genuinely is zero-copy — the buffer arrives little-endian and 4-byte
@@ -233,9 +255,20 @@ change that.
 | 2 | bound-and-refine cascade, differential test | done |
 | 3 | Avo-generated AVX2 int8 kernel | done |
 | 4 | rotated 1-bit tier (RaBitQ-style) | deferred, research-risk |
+| — | NEON int8 kernel for arm64 | planned |
+| — | write-ahead log | planned |
+| — | segmented store: write buffer, immutable segments, tombstones | planned |
 
 Stage 2 is expected to be *slower* than stage 1. Its job is to prove correctness before
 any assembly exists to blame for a wrong answer.
+
+**On the segmented store:** MinDB today is a flat slab — parallel arrays sized at
+boot, an id map, a free list that recycles deleted slots, and whole-file snapshots.
+That is a real design, not a stopgap: it makes a scan sequential and deletes
+compaction entirely. What it does not give is durability between snapshots, or a
+write path that does not contend with readers on a single lock. Those are what a
+WAL and then a segmented store are for, and they are separate tracks with their
+own specs rather than something to bolt onto the slab.
 
 ---
 

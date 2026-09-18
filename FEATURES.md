@@ -18,6 +18,8 @@ tuned for.
   - [Insert](#insert)
   - [Delete](#delete)
   - [Search](#search)
+  - [Get](#get)
+  - [Stats](#stats)
   - [Concurrency model](#concurrency-model)
   - [Slot allocation and the free list](#slot-allocation-and-the-free-list)
 - [Search algorithms](#search-algorithms)
@@ -37,6 +39,8 @@ tuned for.
   - [Search RPC](#search-rpc)
   - [Delete RPC](#delete-rpc)
   - [Snapshot RPC](#snapshot-rpc)
+  - [Get RPC](#get-rpc)
+  - [Stats RPC](#stats-rpc)
   - [The zero-copy read path](#the-zero-copy-read-path)
 - [Server (`cmd/mindb-server`)](#server-cmdmindb-server)
   - [Flags](#flags)
@@ -149,6 +153,14 @@ Re-inserting under an existing ID **replaces** that vector (and its
 payload) in place; it does not create a duplicate or require a prior
 `Delete`.
 
+**Normalization is lossy and the loss is not recoverable.** Only `v/|v|` is
+stored; `|v|` is computed, used to divide, and thrown away. Nothing in the
+engine keeps a copy, so [`Get`](#get) returns the unit vector, not the one
+you sent. For cosine similarity — the only thing MinDB scores — the two are
+interchangeable, which is why storing the norm (4 bytes per vector plus a
+snapshot format version) has not been worth it. If a caller needs the
+magnitude, it keeps its own copy.
+
 ### Delete
 
 ```go
@@ -232,6 +244,79 @@ not `N/2` — a known, documented tradeoff of the free-list design; it never
 shrinks `highWater` back down.
 
 ---
+
+### Get
+
+```go
+func (e *Engine) Get(ids []string) []Record
+
+type Record struct {
+    ID      string
+    Vector  []float32
+    Payload []byte
+}
+```
+
+Point lookup by external ID, batched. Returns one `Record` per id that exists,
+**in request order**. Ids that were never inserted, or that have been deleted,
+are simply absent from the result — there is no error and no placeholder, so
+`len(result) < len(ids)` is normal and **the result is not positionally aligned
+with the request**. A caller that needs to know which ids missed compares the
+returned ids against the ones it asked for.
+
+The whole batch is served under a single `RLock`, so it observes one consistent
+instant. Locking per id would be no cheaper and would let a batch see a state
+that never existed.
+
+**What you get back is not what you inserted.** `Insert` normalizes and discards
+the original norm (see [Insert](#insert)), so `Vector` is `v/|v|`. It is exact,
+though: it is read from the float32 slab, never reconstructed from the int8
+codes, which exist only to prune search candidates and are never a source of
+truth.
+
+**Both slices are copies the caller owns.** Returning a sub-slice of the slab
+would let a later `Insert` — possibly under a different id that inherited the
+slot from the free list — rewrite a response the caller is still holding, after
+the read lock has dropped. One allocation per hit is the price of a result that
+stays valid.
+
+### Stats
+
+```go
+func (e *Engine) Stats() Stats
+
+type Stats struct {
+    Count    int // live vectors
+    Capacity int // slots allocated at boot
+    Dims     int
+
+    MemoryBytes  int64
+    PayloadBytes int64
+
+    KernelName string
+    FastInt8   bool
+    GoArch     string
+}
+```
+
+A point-in-time report, taken under the read lock.
+
+`MemoryBytes` is the slab footprint **reserved**, not used: allocation is eager,
+so it is the same number the moment after `New` as it is at capacity. It is
+`capacity * (dims*5 + 8)` — `dims*4` for the float32 copy, `dims*1` for the int8
+code, and 4 bytes each for the scale and the residual norm. Ids, payloads and
+the id map sit on top of it.
+
+`PayloadBytes` is the live total, payloads being the only variable-size
+allocation the engine owns. It is a running counter updated by every path that
+stores or drops a payload, not a sum computed on demand: walking every live slot
+would make `Stats` O(capacity), which is backwards for a call a monitor polls.
+
+`KernelName`, `FastInt8` and `GoArch` answer *which search path is this
+deployment actually running*. On amd64 with AVX2 that is `avx2` and the cascade;
+on arm64 it is `pure-go` and a brute-force scan (see
+[DotInt8 and the AVX2 kernel](#dotint8-and-the-avx2-kernel)). The same three
+values are logged at startup.
 
 ## Search algorithms
 
@@ -539,16 +624,31 @@ table DeleteResponse  { deleted_count: int32; }
 table SnapshotRequest  {}
 table SnapshotResponse { success: bool; message: string; }
 
+table GetRequest      { ids: [string]; }
+table GetResponse     { vectors: [Vector]; }
+
+table StatsRequest    {}
+table StatsResponse   { vector_count: uint32; capacity: uint32; dims: uint32;
+                        memory_bytes: uint64; payload_bytes: uint64;
+                        kernel_name: string; fast_int8: bool; goarch: string; }
+
 rpc_service VectorService {
   Insert(InsertRequest):     InsertResponse;
   Search(SearchRequest):     SearchResponse;
   Delete(DeleteRequest):     DeleteResponse;
   Snapshot(SnapshotRequest): SnapshotResponse;
+  Get(GetRequest):           GetResponse;
+  Stats(StatsRequest):       StatsResponse;
 }
 ```
 
 The generated Go bindings live in `pkg/mindb/` — flatc-generated, never
-hand-edit.
+hand-edit. `make gen` regenerates them with a `flatc` pinned to the same
+version as the FlatBuffers runtime in `go.mod`; `make check-gen` fails when
+the committed output and the schema have drifted apart. A version mismatch
+between compiler and runtime does not fail the build — it shifts vtable
+offsets and shows up as garbage field values at runtime — which is why the
+pin exists.
 
 ### Insert RPC
 
@@ -591,6 +691,37 @@ when persistence is disabled and when the save itself fails — a design
 choice that keeps failure information in the response body rather than
 requiring callers to parse gRPC status details for something that's really
 just "did the file get written."
+
+### Get RPC
+
+Delegates to `Engine.Get` and encodes each record as a `Vector` — the same
+table `Insert` accepts, so a `Get` result is wire-identical to an `Insert`
+input and can be fed straight back in.
+
+Ids that are absent are omitted rather than erroring, so `vectors` may be
+shorter than the ids in the request and is not positionally aligned with
+them; match on `id`. Found records come off the wire in request order, which
+— as in [Search](#search-rpc) — means the handler prepends offsets in
+reverse, FlatBuffers vectors being built back-to-front. Strings and nested
+vectors are created before the table that references them, because
+FlatBuffers forbids opening one inside the other.
+
+A vector with no payload gets no `payload` field at all, rather than an empty
+one.
+
+### Stats RPC
+
+Delegates to `Engine.Stats` and copies the fields onto the wire. Takes no
+arguments and cannot fail.
+
+`kernel_name`, `fast_int8` and `goarch` are the reason this RPC exists in a
+deployment rather than just in a log line: they let the thing operating MinDB
+report which search path is live, which on ARM is the difference between the
+cascade and a brute-force scan.
+
+There is no `segment_count`. MinDB is a flat slab, and a field that always
+reported `1` would describe a system that does not exist; FlatBuffers can
+append one when segments do.
 
 ### The zero-copy read path
 

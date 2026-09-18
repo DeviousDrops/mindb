@@ -372,6 +372,112 @@ caller, and this was the fix that made it so.
 
 ---
 
+## Point lookups and introspection
+
+### Decision: `Get` omits ids it cannot find, rather than returning `NotFound` or a null placeholder
+
+**Why:** the alternatives are a per-id error, which makes one unknown id in a
+batch of a hundred fail the other ninety-nine, or a positional response with
+holes in it, which makes every caller carry a null check for a case that is
+routine rather than exceptional. A recommendation service asking for the
+metadata of ten candidate ids, one of which was deleted a second ago, wants the
+nine.
+
+So: found records in request order, missing ids simply absent, no error. A
+caller that needs to know which ids missed compares what came back against what
+it asked for.
+
+**Cost, stated so nobody trips over it:** `len(result) < len(ids)` is normal,
+and **the result is not positionally aligned with the request**. Callers match
+on id, not on index. Batch and single-id behave identically, which is the point
+— there is no special case to get wrong.
+
+### Decision: `Get` copies the vector and the payload out of the slab
+
+**Why:** the slab is mutable and its slots are recycled through the free list.
+Handing back a sub-slice of `e.vectors` would let a later `Insert` — possibly
+under a *different* id that inherited the slot — rewrite a response the caller
+is still holding, with no lock left to protect it. The resulting corruption
+would be silent, non-deterministic, and attributed to anything but `Get`.
+
+**Cost:** one allocation per hit, `dims*4` bytes plus the payload. That is the
+price of a result that stays valid after the read lock drops, and it is not
+negotiable at any read path that outlives the lock.
+
+### Decision: `Get` returns the normalized vector; the original norm is not stored
+
+**Why:** `Insert` normalizes to unit length and discards `|v|`, because
+normalization is load-bearing twice — it makes cosine similarity equal the dot
+product, and it is a precondition of the Cauchy-Schwarz bound. So `Get` returns
+`v/|v|`, not `v`. For cosine similarity the two are interchangeable; the
+magnitude is simply not recoverable.
+
+Storing it would cost 4 bytes per vector and a snapshot format version. Nothing
+has needed it, so it is documented rather than built.
+
+**Worth being precise about what is exact:** the vector comes from the float32
+slab, not from the int8 codes. The codes exist only to prune candidates during
+search and are never a source of truth, so `Get` is not lossy in the way the
+quantization might suggest — only in the way normalization is.
+
+### Decision: `Stats.memory_bytes` is reserved, not used; `payload_bytes` is maintained incrementally
+
+**Why:** allocation is eager, so "memory used" and "memory reserved" are the
+same number the moment after `New` as they are at capacity. Reporting it as
+usage would make a fresh engine look full; the field is named and documented as
+the reservation it is.
+
+`payload_bytes` is the one genuinely variable figure, payloads being the only
+on-demand allocation the engine owns. It is kept as a running total updated by
+every path that stores or drops a payload, because summing it on demand would
+make `Stats` O(capacity) — an introspection call that gets slower the bigger
+the deployment is, which is exactly backwards for something a monitor polls.
+
+**Cost:** a counter that two call sites have to keep honest, and a test
+(`TestStatsPayloadBytesTracksMutations`) whose job is to notice when a third
+one forgets.
+
+### Decision: no `segment_count` in `StatsResponse`
+
+**Why:** MinDB is a flat slab. A field that always reports `1` does not describe
+the system, it describes a system somebody expected to find. FlatBuffers can
+append the field when segments actually exist, at no wire cost to existing
+clients — which is precisely the property that makes waiting free.
+
+### Decision: `flatc` is pinned in a container, its output is committed, and CI checks the two agree
+
+**Why:** `flatc` and the FlatBuffers Go runtime are a matched pair, and a
+mismatch **does not fail the build**. It shifts vtable offsets and surfaces as
+garbage field values at runtime, in a service that looks healthy. Pinning
+`flatc` to the `v25.12.19` that matches `go.mod`, in a container rather than on
+`PATH`, makes the pair explicit.
+
+Committing the output keeps a plain `go build` free of any toolchain but Go.
+`make check-gen` regenerates and fails on a diff, which is the only thing
+stopping the schema and the committed code from drifting apart unnoticed — and
+it caught exactly that on its first run: the committed code predated several
+gRPC API changes (`grpc.Invoke`, `*grpc.ClientConn` instead of
+`grpc.ClientConnInterface`, no `UnimplementedVectorServiceServer`).
+
+**Cost:** regeneration needs Docker, and a `.gitattributes` entry pinning
+`pkg/mindb/*.go` to LF so that `autocrlf` on Windows does not make `check-gen`
+report every line of every file as changed.
+
+### Decision: `api.Server` embeds `mindb.UnimplementedVectorServiceServer`
+
+**Why:** without it, adding an RPC to the schema breaks `api.Server` at compile
+time until a handler exists. That sounds like the safer default, and it is the
+reason the alternative needs stating: it also means a schema change cannot be
+generated and reviewed separately from the handlers that implement it, which is
+how the generated code drifted out of date in the first place.
+
+**Cost, and it is a real one:** an RPC that is declared and never implemented
+now returns `Unimplemented` at runtime instead of failing the build. The
+mitigation is that every RPC has an API-level test that goes over a real
+loopback gRPC connection, so an unimplemented handler fails a test rather than
+a deployment.
+
+---
 ## Wire protocol
 
 ### Decision: FlatBuffers over gRPC, with a genuinely zero-copy read path for vectors

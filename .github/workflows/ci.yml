@@ -1,0 +1,64 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  GO_VERSION: "1.25"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v '^pkg/mindb/'))
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: test
+        run: go test ./...
+
+      # The engine is a single RWMutex over shared slabs, so the race detector
+      # is the only thing that can prove the read paths are actually read-only.
+      # It needs cgo and a native toolchain, which is why it runs here rather
+      # than in the cross-build job.
+      - name: test -race
+        run: go test -race ./...
+
+  # A missing build tag on an architecture-specific file is invisible to a
+  # native build -- that is exactly how the arm64 build stayed broken. Only a
+  # cross-build catches it, and arm64 is the deploy target.
+  cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: vet every supported architecture
+        run: make check-cross
+
+  # flatc and the FlatBuffers Go runtime are a matched pair and a mismatch does
+  # not fail the build: it shifts vtable offsets and shows up as garbage fields
+  # at runtime. This is the only thing stopping the committed generated code and
+  # fbs/mindb.fbs from drifting apart unnoticed.
+  generated:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: regenerate and diff
+        run: make check-gen

@@ -17,6 +17,21 @@ func GetRootAsSnapshotResponse(buf []byte, offset flatbuffers.UOffsetT) *Snapsho
 	return x
 }
 
+func FinishSnapshotResponseBuffer(builder *flatbuffers.Builder, offset flatbuffers.UOffsetT) {
+	builder.Finish(offset)
+}
+
+func GetSizePrefixedRootAsSnapshotResponse(buf []byte, offset flatbuffers.UOffsetT) *SnapshotResponse {
+	n := flatbuffers.GetUOffsetT(buf[offset+flatbuffers.SizeUint32:])
+	x := &SnapshotResponse{}
+	x.Init(buf, n+offset+flatbuffers.SizeUint32)
+	return x
+}
+
+func FinishSizePrefixedSnapshotResponseBuffer(builder *flatbuffers.Builder, offset flatbuffers.UOffsetT) {
+	builder.FinishSizePrefixed(offset)
+}
+
 func (rcv *SnapshotResponse) Init(buf []byte, i flatbuffers.UOffsetT) {
 	rcv._tab.Bytes = buf
 	rcv._tab.Pos = i

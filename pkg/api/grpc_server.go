@@ -17,6 +17,11 @@ import (
 
 // Server implements mindb.VectorServiceServer.
 type Server struct {
+	// Embedded so that adding an RPC to the schema does not break this type at
+	// compile time. The trade-off is real: a handler that is never written now
+	// returns Unimplemented at runtime instead of failing the build.
+	mindb.UnimplementedVectorServiceServer
+
 	engine       *core.Engine
 	snapshotPath string
 }
@@ -154,6 +159,90 @@ func (s *Server) Snapshot(_ context.Context, _ *mindb.SnapshotRequest) (*flatbuf
 	mindb.SnapshotResponseAddSuccess(b, ok)
 	mindb.SnapshotResponseAddMessage(b, m)
 	b.Finish(mindb.SnapshotResponseEnd(b))
+	return b, nil
+}
+
+// Get returns the stored record for each requested id, in request order.
+//
+// Ids that are absent -- never inserted, or deleted -- are omitted from the
+// response rather than reported as an error, so one unknown id cannot fail a
+// batch. The response is therefore not positionally aligned with the request;
+// callers match on id.
+//
+// The vectors returned are unit-normalized, because that is what Insert stored:
+// the original magnitude is discarded at insert and is not recoverable here.
+func (s *Server) Get(_ context.Context, req *mindb.GetRequest) (*flatbuffers.Builder, error) {
+	n := req.IdsLength()
+	ids := make([]string, n)
+	for i := 0; i < n; i++ {
+		ids[i] = string(req.Ids(i))
+	}
+
+	recs := s.engine.Get(ids)
+
+	size := 256
+	if len(recs) > 0 {
+		size += len(recs) * (96 + len(recs[0].Vector)*4)
+	}
+	b := flatbuffers.NewBuilder(size)
+
+	offsets := make([]flatbuffers.UOffsetT, len(recs))
+	for i, rec := range recs {
+		// Strings and vectors have to be built before the table that refers to
+		// them; FlatBuffers forbids creating either inside an open table.
+		id := b.CreateString(rec.ID)
+		var payload flatbuffers.UOffsetT
+		if len(rec.Payload) > 0 {
+			payload = b.CreateByteVector(rec.Payload)
+		}
+
+		mindb.VectorStartValuesVector(b, len(rec.Vector))
+		for j := len(rec.Vector) - 1; j >= 0; j-- {
+			b.PrependFloat32(rec.Vector[j])
+		}
+		values := b.EndVector(len(rec.Vector))
+
+		mindb.VectorStart(b)
+		mindb.VectorAddId(b, id)
+		mindb.VectorAddValues(b, values)
+		if payload != 0 {
+			mindb.VectorAddPayload(b, payload)
+		}
+		offsets[i] = mindb.VectorEnd(b)
+	}
+
+	// Vectors build back to front, so records are prepended in reverse to come
+	// out in request order on the wire.
+	mindb.GetResponseStartVectorsVector(b, len(offsets))
+	for i := len(offsets) - 1; i >= 0; i-- {
+		b.PrependUOffsetT(offsets[i])
+	}
+	vec := b.EndVector(len(offsets))
+
+	mindb.GetResponseStart(b)
+	mindb.GetResponseAddVectors(b, vec)
+	b.Finish(mindb.GetResponseEnd(b))
+	return b, nil
+}
+
+// Stats reports engine counters and which search kernel is live.
+func (s *Server) Stats(_ context.Context, _ *mindb.StatsRequest) (*flatbuffers.Builder, error) {
+	st := s.engine.Stats()
+
+	b := flatbuffers.NewBuilder(256)
+	kernel := b.CreateString(st.KernelName)
+	goarch := b.CreateString(st.GoArch)
+
+	mindb.StatsResponseStart(b)
+	mindb.StatsResponseAddVectorCount(b, uint32(st.Count))
+	mindb.StatsResponseAddCapacity(b, uint32(st.Capacity))
+	mindb.StatsResponseAddDims(b, uint32(st.Dims))
+	mindb.StatsResponseAddMemoryBytes(b, uint64(st.MemoryBytes))
+	mindb.StatsResponseAddPayloadBytes(b, uint64(st.PayloadBytes))
+	mindb.StatsResponseAddKernelName(b, kernel)
+	mindb.StatsResponseAddFastInt8(b, st.FastInt8)
+	mindb.StatsResponseAddGoarch(b, goarch)
+	b.Finish(mindb.StatsResponseEnd(b))
 	return b, nil
 }
 

@@ -38,8 +38,8 @@ func main() {
 	widened := make([]VecVirtual, unroll)
 	for i := 0; i < unroll; i++ {
 		widened[i] = YMM()
-		VPMOVSXBD(c.Offset(8*i), widened[i])  // 8x int8 -> 8x int32
-		VCVTDQ2PS(widened[i], widened[i])     // 8x int32 -> 8x float32
+		VPMOVSXBD(c.Offset(8*i), widened[i]) // 8x int8 -> 8x int32
+		VCVTDQ2PS(widened[i], widened[i])    // 8x int32 -> 8x float32
 		VFMADD231PS(q.Offset(32*i), widened[i], acc[i])
 	}
 

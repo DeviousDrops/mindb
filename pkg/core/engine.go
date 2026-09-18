@@ -62,6 +62,12 @@ type Engine struct {
 	highWater  uint32   // slots at or beyond this were never used; scan stops here
 	count      int
 
+	// payloadBytes is maintained incrementally rather than summed on demand:
+	// payloads are the only variable-size allocation the engine owns, and
+	// walking every live slot to total them would make Stats O(capacity).
+	// Every path that stores or drops a payload has to keep this honest.
+	payloadBytes int64
+
 	// useCascade selects the bound-and-refine path over a plain float32 scan.
 	// Both return identical results; the cascade is only worth taking when a
 	// SIMD int8 kernel is available, since pure Go int8 is slower than float32.
@@ -190,6 +196,10 @@ func (e *Engine) store(id string, buf []float32, payload []byte) error {
 	base := int(slot) * e.dims
 	copy(e.vectors[base:], buf)
 	e.scales[slot], e.residuals[slot] = math.Quantize(buf, e.codes[base:base+e.dims])
+
+	// Overwriting an existing id reuses its slot, so the payload it is replacing
+	// has to come off the total first.
+	e.payloadBytes += int64(len(pay)) - int64(len(e.payloads[slot]))
 	e.payloads[slot] = pay
 	return nil
 }
@@ -226,6 +236,7 @@ func (e *Engine) Delete(id string) bool {
 	delete(e.idMap, id)
 	e.live[slot] = false
 	e.externalID[slot] = ""
+	e.payloadBytes -= int64(len(e.payloads[slot]))
 	e.payloads[slot] = nil // drop the reference so the payload can be collected
 	e.free = append(e.free, slot)
 	e.count--

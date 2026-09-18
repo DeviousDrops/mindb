@@ -1,0 +1,5 @@
+# flatc emits LF. Without this, autocrlf checks the generated files out as
+# CRLF on Windows and `make check-gen` reports a diff on every line of every
+# file, which would make the drift check useless exactly where it is run by
+# hand.
+pkg/mindb/*.go text eol=lf

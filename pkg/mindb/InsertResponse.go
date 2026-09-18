@@ -17,6 +17,21 @@ func GetRootAsInsertResponse(buf []byte, offset flatbuffers.UOffsetT) *InsertRes
 	return x
 }
 
+func FinishInsertResponseBuffer(builder *flatbuffers.Builder, offset flatbuffers.UOffsetT) {
+	builder.Finish(offset)
+}
+
+func GetSizePrefixedRootAsInsertResponse(buf []byte, offset flatbuffers.UOffsetT) *InsertResponse {
+	n := flatbuffers.GetUOffsetT(buf[offset+flatbuffers.SizeUint32:])
+	x := &InsertResponse{}
+	x.Init(buf, n+offset+flatbuffers.SizeUint32)
+	return x
+}
+
+func FinishSizePrefixedInsertResponseBuffer(builder *flatbuffers.Builder, offset flatbuffers.UOffsetT) {
+	builder.FinishSizePrefixed(offset)
+}
+
 func (rcv *InsertResponse) Init(buf []byte, i flatbuffers.UOffsetT) {
 	rcv._tab.Bytes = buf
 	rcv._tab.Pos = i

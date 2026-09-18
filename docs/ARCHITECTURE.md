@@ -274,6 +274,15 @@ pooled across queries. `if score <= heap.min { continue }` is a single predictab
 eagerly at boot. Eager allocation means the process either has the memory or fails
 immediately, rather than failing under load.
 
+**This is a flat slab, and it is worth naming as one.** There are no segments, no write
+buffer and no tombstones: one set of parallel arrays, an id map from external ID to slot,
+a free list that recycles deleted slots, and whole-file snapshots. That is what makes a
+scan sequential and deletes compaction entirely, and it is also why every write takes the
+same lock every reader uses, and why nothing survives a crash between snapshots. A
+write-ahead log and then a segmented store are the answers to those two, in that order,
+and both are separate tracks with their own specs — see the roadmap. Until they land,
+read this section as the whole of MinDB's storage layer, because it is.
+
 ---
 
 ## Durability
@@ -299,10 +308,11 @@ does not invalidate every existing snapshot in the field.
 
 ## Wire protocol
 
-gRPC with FlatBuffers, defined in `fbs/mindb.fbs`. The contract is frozen: Insert, Search,
-Delete, Snapshot.
+gRPC with FlatBuffers, defined in `fbs/mindb.fbs`: Insert, Search, Delete, Snapshot, Get,
+Stats. Fields are only ever appended, never renumbered or removed, so an older client keeps
+working against a newer server.
 
-Two things worth knowing:
+Three things worth knowing:
 
 **"Zero-copy" is half true, and it is worth being precise about which half.** Reading a
 request genuinely is zero-copy — the buffer arrives little-endian and 4-byte aligned, so
@@ -314,7 +324,15 @@ generated per-element accessor, which is bounds-checked offset arithmetic per el
 `grpc.ForceServerCodec(flatbuffers.FlatbuffersCodec{})` at server construction. Omit it and
 the server fails at *runtime*, not compile time.
 
-`pkg/mindb/` is flatc-generated. Do not hand-edit it; `make flatc` overwrites it.
+**`Get` returns what was stored, which is not what was sent.** `Insert` normalizes and
+discards the original magnitude, so a point lookup returns `v/|v|`. The values are exact
+— read from the float32 slab, never reconstructed from the int8 codes — and ids that
+cannot be found are omitted from the response rather than erroring, so the response is not
+positionally aligned with the request.
+
+`pkg/mindb/` is flatc-generated. Do not hand-edit it; `make gen` overwrites it, using a
+pinned `flatc` container that matches the FlatBuffers runtime in `go.mod`. `make check-gen`
+fails when the committed output and the schema have drifted apart.
 
 ---
 
@@ -356,6 +374,11 @@ accident.
 | 2 | bound-and-refine cascade in pure Go, differential test | done |
 | 3 | Avo-generated AVX2 asymmetric int8 kernel | done |
 | 4 | rotated 1-bit tier (RaBitQ-style) | deferred, research-risk |
+| — | portability: kernels split by build tag, arm64 on the pure-Go path | done |
+| — | `Get` and `Stats` RPCs | done |
+| — | NEON `SDOT` int8 kernel for arm64 | planned |
+| — | write-ahead log: replay onto the slab at boot, truncate on snapshot | planned |
+| — | segmented store: write buffer, immutable segments, tombstones | planned |
 
 Each stage ships something working. Stage 2 is expected to be *slower* than stage 1 — its
 job is to establish correctness before any assembly exists to blame for a wrong answer.

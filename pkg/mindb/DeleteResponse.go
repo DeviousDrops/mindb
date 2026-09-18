@@ -17,6 +17,21 @@ func GetRootAsDeleteResponse(buf []byte, offset flatbuffers.UOffsetT) *DeleteRes
 	return x
 }
 
+func FinishDeleteResponseBuffer(builder *flatbuffers.Builder, offset flatbuffers.UOffsetT) {
+	builder.Finish(offset)
+}
+
+func GetSizePrefixedRootAsDeleteResponse(buf []byte, offset flatbuffers.UOffsetT) *DeleteResponse {
+	n := flatbuffers.GetUOffsetT(buf[offset+flatbuffers.SizeUint32:])
+	x := &DeleteResponse{}
+	x.Init(buf, n+offset+flatbuffers.SizeUint32)
+	return x
+}
+
+func FinishSizePrefixedDeleteResponseBuffer(builder *flatbuffers.Builder, offset flatbuffers.UOffsetT) {
+	builder.FinishSizePrefixed(offset)
+}
+
 func (rcv *DeleteResponse) Init(buf []byte, i flatbuffers.UOffsetT) {
 	rcv._tab.Bytes = buf
 	rcv._tab.Pos = i

@@ -42,13 +42,63 @@ var (
 	ErrSnapshotSize = errors.New("mindb: snapshot does not fit in engine capacity")
 )
 
-// Save writes the engine to path atomically.
+// Save writes the engine to path atomically, and retires the write-ahead log
+// records the snapshot now covers.
+//
+// With a log attached the order is rotate -> snapshot -> meta -> delete the
+// retired segment, and every step of it is load-bearing:
+//
+//   - Rotating first means writes that land during the snapshot go to the new
+//     segment, so deleting the old one cannot lose them.
+//   - The meta file is written before the old segment is deleted, never after.
+//     Recovery accepts a log when some retained segment carries the meta's run
+//     id; if the delete came first, a crash in between would leave a meta naming
+//     a run id no remaining segment has, and the engine would refuse to start on
+//     a set of files that is perfectly consistent.
+//
+// A crash anywhere in this sequence leaves the log covering more history than
+// the snapshot needs, never less. Replaying records the snapshot already
+// contains is harmless: insert and delete are blind writes with no
+// read-modify-write, so re-applying a range that overlaps the snapshot converges
+// on the same state.
+func (e *Engine) Save(path string) error {
+	if e.wal == nil {
+		return e.saveSnapshot(path)
+	}
+
+	run, err := newRunID()
+	if err != nil {
+		return err
+	}
+
+	// Under writeMu so the rotation lands at a definite point in the write
+	// order rather than in the middle of a batch.
+	e.writeMu.Lock()
+	retired, err := e.wal.rotate(run)
+	e.writeMu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	if err := e.saveSnapshot(path); err != nil {
+		return err
+	}
+	if err := writeMeta(metaPath(path), run); err != nil {
+		return err
+	}
+	if err := os.Remove(retired); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("mindb: remove retired write-ahead log %s: %w", retired, err)
+	}
+	return nil
+}
+
+// saveSnapshot writes the engine to path atomically.
 //
 // The sequence is tmp -> fsync -> rename -> fsync(parent dir). That last step is
 // the one almost everyone omits, and without it the rename itself can be lost:
 // you fsync the data, rename over the old file, lose power, and come back to a
 // directory entry that was never durably updated.
-func (e *Engine) Save(path string) error {
+func (e *Engine) saveSnapshot(path string) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp*")
 	if err != nil {

@@ -37,6 +37,9 @@ func replayWAL(e *Engine, base string, expect runID, checkRun bool) (WALRecovery
 	if err != nil {
 		return rec, err
 	}
+	if segments, err = dropStubSegments(segments, &rec); err != nil {
+		return rec, err
+	}
 	if len(segments) == 0 {
 		return rec, nil
 	}
@@ -83,6 +86,36 @@ func replayWAL(e *Engine, base string, expect runID, checkRun bool) (WALRecovery
 		return rec, nil
 	}
 	return rec, nil
+}
+
+// dropStubSegments removes segments too short to hold a header, along with
+// everything after them.
+//
+// A segment is created and its header synced in one step, so a file shorter
+// than a header is a crash caught between those two -- no record can have been
+// written to it, and nothing acknowledged is lost by removing it. What can be
+// lost is a later segment, which is why that case, and only that case, is
+// reported as truncation.
+func dropStubSegments(segments []string, rec *WALRecovery) ([]string, error) {
+	for i, path := range segments {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("mindb: stat write-ahead log %s: %w", path, err)
+		}
+		if info.Size() >= walHeaderSize {
+			continue
+		}
+		if len(segments) > i+1 {
+			rec.Truncated = true
+		}
+		for _, orphan := range segments[i:] {
+			if err := os.Remove(orphan); err != nil {
+				return nil, fmt.Errorf("mindb: remove headerless write-ahead log %s: %w", orphan, err)
+			}
+		}
+		return segments[:i], nil
+	}
+	return segments, nil
 }
 
 // readSegmentRun validates a segment header and returns its run id.

@@ -251,6 +251,8 @@ func (s *Server) Stats(_ context.Context, _ *mindb.StatsRequest) (*flatbuffers.B
 	mindb.StatsResponseAddKernelName(b, kernel)
 	mindb.StatsResponseAddFastInt8(b, st.FastInt8)
 	mindb.StatsResponseAddGoarch(b, goarch)
+	mindb.StatsResponseAddWalEnabled(b, st.WALEnabled)
+	mindb.StatsResponseAddWalHealthy(b, st.WALHealthy)
 	b.Finish(mindb.StatsResponseEnd(b))
 	return b, nil
 }

@@ -62,10 +62,18 @@ type wal struct {
 	// healthy goes false on the first write or fsync failure and never goes back
 	// on. A retry that succeeds proves nothing: on Linux a failed fsync may have
 	// already dropped the dirty pages it could not write, so the data is gone and
-	// the next call has nothing left to fail on.
+	// the next call has nothing left to fail on. For the same reason syncErr is
+	// sticky once this is false: every write from then on is refused rather than
+	// acknowledged on the strength of an fsync that cannot speak for the ones
+	// before it. Reads carry on; the process does not halt.
 	healthy atomic.Bool
 	onFault func()
 	faulted atomic.Bool
+
+	// syncAlone stops batches from forming, so the fsync count tracks the write
+	// count. Only BenchmarkWALInsert sets it, to measure what group commit is
+	// worth against the thing it replaced.
+	syncAlone bool
 }
 
 // walBufferSize is one segment's write buffer. Group commit means a batch is
@@ -211,17 +219,23 @@ func (w *wal) syncTo(seq uint64) error {
 		err := w.flushLocked()
 
 		if err == nil {
-			w.mu.Unlock()
-			err = w.f.Sync()
-			w.mu.Lock()
+			if w.syncAlone {
+				err = w.f.Sync()
+			} else {
+				w.mu.Unlock()
+				err = w.f.Sync()
+				w.mu.Lock()
+			}
 		}
 
 		w.syncing = false
 		w.syncedSeq = target
-		w.syncErr = nil
-		if err != nil {
+		switch {
+		case err != nil:
 			w.fault()
 			w.syncErr = fmt.Errorf("mindb: fsync write-ahead log: %w", err)
+		case w.healthy.Load():
+			w.syncErr = nil
 		}
 		w.cond.Broadcast()
 	}

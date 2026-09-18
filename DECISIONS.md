@@ -372,6 +372,181 @@ caller, and this was the fix that made it so.
 
 ---
 
+## Write-ahead log
+
+### Decision: apply, then log, then fsync, then acknowledge — a redo log, not write-ahead ordering
+
+**Why:** the ordering is Redis's AOF, not ARIES. The engine applies an
+operation to the slab first and appends the record second
+(`pkg/core/engine.go:Insert`), and the name "write-ahead log" is kept only
+because that is what everyone calls the file.
+
+The guarantee that matters is unchanged: **an operation is acknowledged only
+after its record is durable, so every acked write survives a crash.** What
+differs is the other side of it: an *unacked* write becomes visible to
+readers before it is durable, so a `Search` running concurrently with an
+in-flight `Insert` can return a vector that a crash then erases. No client
+was ever told that `Insert` succeeded — from any client's point of view the
+write was in flight, and an in-flight write may or may not be observed and
+may or may not survive. A client that needs to know waits for the ack.
+
+**What true write-ahead ordering would cost:** `store`'s only failure is
+`ErrCapacityExceeded`, and it is discovered while applying. Logging first
+means the record is already durable when the apply fails, so recovery would
+replay an operation the engine rejected. Avoiding that means splitting the
+allocator into reserve-then-fill so the failure is known before the append,
+and it means a group-committed batch has to be applied in log order by one
+writer rather than each writer applying its own — the batch stops being
+independent work. That is a different write path, not a reordering of this
+one.
+
+### Decision: group commit with a leader, and no timer
+
+**Why:** the writer that arrives while no sync is in flight becomes the
+leader: it flushes everything buffered so far, records how far that reaches,
+and runs the `fsync` with the lock released so later writers keep appending.
+They land in the next batch. Nothing is timer-driven, so a lone writer syncs
+immediately and pays no added latency, while under load the batch is however
+many writers arrived during the last `fsync` — the system self-tunes to the
+disk it is on.
+
+**What it bought** (`BenchmarkWALInsert`, 13th Gen i7 laptop NVMe, Windows):
+
+| writers | no log | fsync per write | group commit |
+|---------|--------|-----------------|--------------|
+| 1       | 425 ns | 288 µs          | 283 µs       |
+| 8       | 501 ns | 301 µs          | 60 µs        |
+| 64      | 638 ns | 229 µs          | 11 µs        |
+
+At one writer the last two columns are the same benchmark, which is the
+point: the batch only exists when somebody else is waiting. The absolute
+numbers are a property of the disk — expect a different answer on a cloud
+volume with a network in the way — but the shape holds.
+
+**What it cost:** durability is ~700x the cost of the in-memory write at one
+writer. That is the price of the guarantee, not an implementation artifact,
+and it is why `-wal off` exists.
+
+### Decision: the record checksum covers the length field, not just the body
+
+**Why:** the length is read before the body and decides how many bytes are
+read. A checksum over the body alone validates whatever the corrupt length
+said to read, so a flipped bit in the length field either walks off the end
+of the file or silently swallows the next record. Covering both means a
+damaged length is caught by the same check as damaged data.
+
+### Decision: the log stores normalized vectors, and replay calls `store()`
+
+**Why:** the same reason `Load` does (see Durability). `Insert` normalizes;
+re-normalizing an already-unit vector is not the identity in float32, so a
+replay that went through `Insert` would shift low bits and make scores after
+a recovery differ from scores before the crash. The log therefore holds what
+the slab holds, and replay writes it straight back.
+
+### Decision: `Save` rotates the log first, then writes the snapshot, then the meta, then deletes the retired segment
+
+**Why:** each step is load-bearing, and the order is the only one that
+survives a crash at every point:
+
+- **Rotate first** so writes landing during the snapshot go to the new
+  segment. Deleting the old segment afterwards then cannot lose them.
+- **Meta before delete, never after.** Recovery accepts a log when some
+  retained segment carries the meta's run id. With the delete first, a crash
+  in between leaves a meta naming a run id no remaining segment has, and the
+  engine refuses to start on a set of files that is perfectly consistent.
+
+A crash anywhere in the sequence leaves the log covering *more* history than
+the snapshot needs, never less. Replaying the overlap is harmless: insert and
+delete are blind writes with no read-modify-write, so re-applying a range
+that the snapshot already contains converges on the same state.
+
+### Decision: snapshot lineage lives in a companion `<snapshot>.meta` file, not in the snapshot format
+
+**Why:** the failure being prevented is an operator restoring last week's
+snapshot next to this morning's log, and having the log replayed over a
+history it never belonged to. Every completed `Save` mints a run id, stamps
+it into the segment it rotates to, and writes it beside the snapshot;
+recovery refuses to start unless some retained segment carries the id the
+meta names, with an error that says how to fix it — replace the snapshot,
+its meta and the log together, or delete the log so the snapshot stands
+alone.
+
+**Rejected alternative: a snapshot format version bump with the run id
+inside.** It works, but it makes every existing snapshot unreadable to get a
+field that has nothing to do with the snapshot's contents. A sidecar file
+costs one `os.Stat` and keeps v1 snapshots loadable.
+
+**What it cost:** a snapshot with no meta beside it — one written before
+this existed, or one restored without its companion — cannot be checked at
+all. That case is accepted, replayed, and reported (`WALRecovery.LegacyMeta`,
+logged as a warning at startup) rather than refused, because refusing would
+break every engine that predates the file.
+
+### Decision: a failed fsync marks the log unhealthy forever, and the process keeps serving
+
+**Why:** halting on a write error throws away a correct in-memory engine that
+can still answer every read. Pretending nothing happened is worse. So the
+process stays up, `wal_healthy` goes false, and it stays false: the readiness
+probe reports `NOT_SERVING`, the orchestrator takes the pod out of rotation,
+and reads continue for whoever is already connected.
+
+**Why it never recovers:** on Linux a failed `fsync` may already have dropped
+the dirty pages it could not write. The data is gone, and the next call has
+nothing left to fail on — so a retry returning success proves nothing about
+the write that failed. For the same reason writes are refused from then on
+rather than acknowledged on the strength of a later successful sync.
+
+### Decision: damage ends the log, and that decision is made permanent
+
+**Why:** a process killed mid-append leaves a partial record at the end of
+the file. That is how a log is *expected* to end, not corruption, so replay
+stops there and the open succeeds.
+
+What matters is that the decision sticks: recovery truncates the damaged
+segment to the last good record and deletes every segment after it. Without
+that, the next restart would replay records this one discarded, and two
+recoveries over the same files would disagree about what the database
+contains.
+
+A segment shorter than its header is the same case one step earlier — a
+crash between creating the file and syncing its header. No record can exist
+in it, so it is removed rather than treated as an unreadable log.
+
+### Decision: `Delete` returns `(bool, error)`, and no-op deletes are not logged
+
+**Why:** the bool is "did this id exist", which the RPC needs to report
+`deleted_count`. The error is the durability failure, and swallowing it is
+the one thing a delete must never do: an acknowledged delete that is lost
+resurrects the vector on the next restart, which is worse than a failed
+delete the caller can retry.
+
+Deletes that change nothing are not logged at all. Logging them would let a
+caller retrying a delete in a loop grow the log without ever changing the
+state it describes.
+
+### Decision: the log is on by default wherever snapshots are
+
+**Why:** `-wal` defaults to `<snapshot>.wal`, and requires `-snapshot`
+because nothing retires segments without snapshots — the log would grow
+until the disk filled. A snapshot on its own silently loses every write since
+it was taken, so the safe combination is the default one, and `-wal off` is
+how to say that losing them is acceptable.
+
+The startup log warns when `-snapshot-interval` is 0, because then nothing
+retires a segment until shutdown and the log grows unbounded in the meantime.
+
+### Decision: the health service listens on its own port
+
+**Why:** the data server is built with `grpc.ForceServerCodec`, which applies
+to every service registered on it, and the FlatBuffers codec type-asserts
+what it is handed to `*flatbuffers.Builder`. A protobuf health response on
+the same server would panic rather than fail cleanly. The alternative —
+registering the codec by content-subtype instead of forcing it — would change
+the contract every existing client is built against. A second listener on
+`-health-addr` costs a port and nothing else.
+
+---
+
 ## Point lookups and introspection
 
 ### Decision: `Get` omits ids it cannot find, rather than returning `NotFound` or a null placeholder

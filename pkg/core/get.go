@@ -94,10 +94,21 @@ type Stats struct {
 	KernelName string
 	FastInt8   bool
 	GoArch     string
+
+	// WALHealthy is false once a log write or fsync has failed, and never goes
+	// back on. It is what the readiness probe reads: the process keeps serving,
+	// because in-memory state is still correct and still useful, but it stops
+	// advertising itself as a place to send writes it cannot persist.
+	WALEnabled bool
+	WALHealthy bool
 }
 
 // Stats returns a snapshot of engine state.
 func (e *Engine) Stats() Stats {
+	// Read before taking the lock: the log has its own, and a faulting writer
+	// may be holding this one while it waits on disk.
+	walEnabled, walHealthy := e.WALEnabled(), e.WALHealthy()
+
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
@@ -110,6 +121,8 @@ func (e *Engine) Stats() Stats {
 		KernelName:   math.KernelName(),
 		FastInt8:     math.HasFastInt8(),
 		GoArch:       runtime.GOARCH,
+		WALEnabled:   walEnabled,
+		WALHealthy:   walHealthy,
 	}
 }
 

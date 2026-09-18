@@ -81,7 +81,7 @@ func TestSnapshotRoundTrip(t *testing.T) {
 func TestSnapshotSkipsDeleted(t *testing.T) {
 	e, _ := buildEngine(t, 16, 50, 100, 12)
 	for i := 0; i < 20; i++ {
-		e.Delete(fmt.Sprintf("vec-%04d", i))
+		_, _ = e.Delete(fmt.Sprintf("vec-%04d", i))
 	}
 
 	path := filepath.Join(t.TempDir(), "snap.mdb")

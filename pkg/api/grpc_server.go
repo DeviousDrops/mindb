@@ -129,10 +129,19 @@ func (s *Server) Search(_ context.Context, req *mindb.SearchRequest) (*flatbuffe
 }
 
 // Delete removes every id in the request, reporting how many existed.
+//
+// Like Insert, this is not atomic: a durability failure part way through leaves
+// the ids before it deleted. The error says how many that was, because a caller
+// that retries the whole batch needs to know the first attempt was not a no-op.
 func (s *Server) Delete(_ context.Context, req *mindb.DeleteRequest) (*flatbuffers.Builder, error) {
 	var deleted int32
 	for i := 0; i < req.IdsLength(); i++ {
-		if s.engine.Delete(string(req.Ids(i))) {
+		existed, err := s.engine.Delete(string(req.Ids(i)))
+		if err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"delete %q: %v (%d of %d ids already deleted)", req.Ids(i), err, deleted, req.IdsLength())
+		}
+		if existed {
 			deleted++
 		}
 	}

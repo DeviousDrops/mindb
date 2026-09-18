@@ -18,6 +18,18 @@ func normalized(v []float32) []float32 {
 	return n
 }
 
+// mustDelete deletes id and fails the test if the deletion could not be made
+// durable. It returns whether the id was there to begin with, which several
+// tests assert on.
+func mustDelete(t *testing.T, e *Engine, id string) bool {
+	t.Helper()
+	existed, err := e.Delete(id)
+	if err != nil {
+		t.Fatalf("delete %s: %v", id, err)
+	}
+	return existed
+}
+
 func mustInsert(t *testing.T, e *Engine, id string, vec []float32, payload []byte) {
 	t.Helper()
 	if err := e.Insert(id, vec, payload); err != nil {
@@ -139,7 +151,7 @@ func TestGetOmitsDeletedID(t *testing.T) {
 	}
 	mustInsert(t, e, "a", []float32{1, 0, 0, 0}, nil)
 	mustInsert(t, e, "b", []float32{0, 1, 0, 0}, nil)
-	if !e.Delete("a") {
+	if !mustDelete(t, e, "a") {
 		t.Fatal("delete reported a as absent")
 	}
 
@@ -157,7 +169,7 @@ func TestGetAfterDeletedSlotIsReused(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustInsert(t, e, "a", []float32{1, 0, 0, 0}, []byte("a-data"))
-	e.Delete("a")
+	mustDelete(t, e, "a")
 	mustInsert(t, e, "b", []float32{0, 1, 0, 0}, []byte("b-data"))
 
 	if got := e.Get([]string{"a"}); len(got) != 0 {
@@ -236,7 +248,7 @@ func TestGetAfterRestart(t *testing.T) {
 		mustInsert(t, e, id, v, []byte(id+"-payload"))
 		want[id] = normalized(v)
 	}
-	e.Delete("c")
+	mustDelete(t, e, "c")
 
 	path := filepath.Join(t.TempDir(), "snap.mindb")
 	if err := e.Save(path); err != nil {
@@ -294,7 +306,7 @@ func TestGetConcurrentWithInsert(t *testing.T) {
 			id := string(rune('a'+i%26)) + string(rune('a'+(i/26)%26))
 			_ = e.Insert(id, randVec(w, dims), []byte("q"))
 			if i%3 == 0 {
-				e.Delete(id)
+				_, _ = e.Delete(id)
 			}
 		}
 	}()
@@ -392,7 +404,7 @@ func TestStatsPayloadBytesTracksMutations(t *testing.T) {
 	}
 
 	mustInsert(t, e, "b", vec, []byte("xyz"))
-	e.Delete("b")
+	mustDelete(t, e, "b")
 	if got := e.Stats().PayloadBytes; got != 0 {
 		t.Fatalf("after delete: PayloadBytes = %d, want 0", got)
 	}
@@ -405,7 +417,7 @@ func TestStatsCountAfterDelete(t *testing.T) {
 	}
 	mustInsert(t, e, "a", []float32{1, 0, 0, 0}, nil)
 	mustInsert(t, e, "b", []float32{0, 1, 0, 0}, nil)
-	e.Delete("a")
+	mustDelete(t, e, "a")
 
 	if got := e.Stats().Count; got != 1 {
 		t.Errorf("Count = %d, want 1", got)

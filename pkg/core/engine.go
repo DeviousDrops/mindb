@@ -49,6 +49,15 @@ type Engine struct {
 	dims     int
 	capacity int
 
+	// writeMu serializes mutating operations. It is not mu: the fsync at the end
+	// of a write happens with this held and mu released, so a write never blocks
+	// a reader on disk. Its job is to make the order operations reach the log the
+	// same order they reached the slab — without it two concurrent writes to one
+	// id could be applied in one order and logged in the other, and recovery
+	// would disagree with what was live.
+	writeMu sync.Mutex
+	wal     *wal
+
 	mu         sync.RWMutex
 	vectors    []float32 // capacity*dims, unit-normalized
 	codes      []int8    // capacity*dims, int8 quantization of vectors
@@ -161,7 +170,26 @@ func (e *Engine) Insert(id string, vec []float32, payload []byte) error {
 		return ErrZeroVector
 	}
 
-	return e.store(id, buf, payload)
+	if e.wal == nil {
+		return e.store(id, buf, payload)
+	}
+
+	// Encoded before the lock: it is the largest allocation on this path and
+	// nothing about it depends on engine state.
+	rec := appendInsert(nil, id, buf, payload)
+
+	e.writeMu.Lock()
+	// Applied before it is logged. store's only failure is ErrCapacityExceeded,
+	// and taking it here means the log never carries a record that cannot be
+	// replayed. See the wal type for what that ordering costs.
+	if err := e.store(id, buf, payload); err != nil {
+		e.writeMu.Unlock()
+		return err
+	}
+	seq := e.wal.buffer(rec)
+	e.writeMu.Unlock()
+
+	return e.wal.syncTo(seq)
 }
 
 // store publishes an already-normalized vector under id. buf is adopted, not
@@ -225,7 +253,35 @@ func (e *Engine) allocSlot() (uint32, error) {
 // preallocated, so compacting would move data around inside an array that never
 // changes size. A free list gets the same reuse in ten lines with no concurrency
 // exposure at all.
-func (e *Engine) Delete(id string) bool {
+//
+// The error is non-nil only when a write-ahead log is attached and the record
+// could not be made durable. It is reported rather than swallowed because a
+// delete that is acknowledged and then lost resurrects the vector on the next
+// restart, which is the worst failure this package can have.
+func (e *Engine) Delete(id string) (bool, error) {
+	if e.wal == nil {
+		return e.deleteSlot(id), nil
+	}
+
+	rec := appendDelete(nil, id)
+
+	e.writeMu.Lock()
+	existed := e.deleteSlot(id)
+	if !existed {
+		// Nothing changed, so there is nothing to replay. Logging no-op deletes
+		// would let a caller retrying a delete in a loop grow the log without
+		// ever changing the state it describes.
+		e.writeMu.Unlock()
+		return false, nil
+	}
+	seq := e.wal.buffer(rec)
+	e.writeMu.Unlock()
+
+	return true, e.wal.syncTo(seq)
+}
+
+// deleteSlot removes id from the slab, reporting whether it was there.
+func (e *Engine) deleteSlot(id string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 

@@ -33,6 +33,14 @@ tuned for.
   - [File format](#file-format)
   - [Save](#save)
   - [Load](#load)
+- [Write-ahead log](#write-ahead-log)
+  - [What "write-ahead" means here](#what-write-ahead-means-here)
+  - [Record format](#record-format)
+  - [The write path, and group commit](#the-write-path-and-group-commit)
+  - [Recovery](#recovery)
+  - [Rotation, and the run id](#rotation-and-the-run-id)
+  - [Health](#health)
+  - [Opening an engine](#opening-an-engine)
 - [gRPC API (`pkg/api`)](#grpc-api-pkgapi)
   - [Wire schema](#wire-schema)
   - [Insert RPC](#insert-rpc)
@@ -164,10 +172,18 @@ magnitude, it keeps its own copy.
 ### Delete
 
 ```go
-func (e *Engine) Delete(id string) bool
+func (e *Engine) Delete(id string) (bool, error)
 ```
 
-Returns whether `id` existed. On success, the slot is marked not-live, its
+The bool is whether `id` existed — deleting an ID that isn't there is not an
+error, it just returns `false`. The error is a durability failure: with the
+[write-ahead log](#write-ahead-log) on, `Delete` does not return until the
+record is on disk, and a log that cannot be written fails the call rather
+than acknowledging a deletion a restart would undo. Deletes that change
+nothing are not logged at all, so a caller retrying one in a loop cannot
+grow the log.
+
+On success, the slot is marked not-live, its
 ID and payload references are cleared (so the payload's backing array can be
 garbage-collected even if a caller elsewhere still holds a `Result` that
 aliased it — see the aliasing note in [Search](#search)), and the slot index
@@ -215,15 +231,26 @@ float32) or [`searchCascade`](#the-bound-and-refine-cascade) depending on
 
 ### Concurrency model
 
-One `sync.RWMutex` (`e.mu`), full stop. Reads (`Search`, `Len`, `Cascade`)
-take `RLock`; writes (`Insert`, `Delete`, `SetCascade`) take the exclusive
-`Lock`. Multiple `Search` calls run genuinely concurrently — `RLock` doesn't
-serialize them — but a `Search` in flight blocks a concurrent `Insert`/
-`Delete`, and vice versa.
+One `sync.RWMutex` (`e.mu`) guards the slab. Reads (`Search`, `Len`,
+`Cascade`) take `RLock`; writes (`Insert`, `Delete`, `SetCascade`) take the
+exclusive `Lock`. Multiple `Search` calls run genuinely concurrently —
+`RLock` doesn't serialize them — but a `Search` in flight blocks a
+concurrent `Insert`/`Delete`, and vice versa.
 
 Full rationale, including the three concrete bugs in the lock-free design
 this replaced, is in
 [`DECISIONS.md`](DECISIONS.md#concurrency).
+
+A second, plain `sync.Mutex` (`e.writeMu`) arrived with the [write-ahead
+log](#write-ahead-log), and it does one job: hold apply-then-append together
+so that the order records reach the log is the order they reached the slab.
+Without it, two writers updating the same ID can land in the slab in one
+order and in the log in the other, and a replay then rebuilds a database
+that disagrees with the one that crashed. It is held across `store` and the
+buffered append only — never across the `fsync`, which is where all the time
+goes, and releasing it there is what lets [group
+commit](#the-write-path-and-group-commit) work at all. Nothing takes it when
+no log is attached.
 
 ### Slot allocation and the free list
 
@@ -296,6 +323,9 @@ type Stats struct {
     KernelName string
     FastInt8   bool
     GoArch     string
+
+    WALEnabled bool
+    WALHealthy bool
 }
 ```
 
@@ -317,6 +347,13 @@ deployment actually running*. On amd64 with AVX2 that is `avx2` and the cascade;
 on arm64 it is `pure-go` and a brute-force scan (see
 [DotInt8 and the AVX2 kernel](#dotint8-and-the-avx2-kernel)). The same three
 values are logged at startup.
+
+`WALEnabled` says whether writes are being logged at all. `WALHealthy` is
+false once a log write or `fsync` has failed and never goes back on — it is
+what a readiness probe watches, and it is read *before* the lock is taken
+rather than inside it, because the log has its own. Both are `true`/`true`
+on a healthy logging engine and `false`/`true` when there is no log: nothing
+has failed, there is just nothing to fail. See [Health](#health).
 
 ## Search algorithms
 
@@ -592,6 +629,218 @@ callers should treat as stable.
 
 ---
 
+## Write-ahead log
+
+`pkg/core/wal.go`, `wal_format.go`, `wal_replay.go`, `meta.go`, `open.go`
+
+A snapshot on its own loses every write taken since it was written. The log
+closes that window: an operation is acknowledged only once its record is on
+disk, so **every acknowledged write survives a crash**, and what a snapshot
+does not cover is replayed at the next boot.
+
+### What "write-ahead" means here
+
+Not what the name says. The engine applies an operation to the slab first
+and appends the record second — the ordering is Redis's AOF, not ARIES. The
+name is kept because that is what everyone calls the file.
+
+The guarantee above is unaffected. What differs is the other side of it: an
+*unacknowledged* write becomes visible to readers before it is durable, so a
+`Search` running concurrently with an in-flight `Insert` can return a vector
+a crash then erases. No client was ever told that write succeeded — from any
+client's point of view it was in flight, and an in-flight write may or may
+not be observed and may or may not survive. A client that needs to know
+waits for the acknowledgement.
+
+True log-before-apply would mean reserving the slot before the append, since
+`store`'s only failure (`ErrCapacityExceeded`) is discovered while applying
+and by then the record would already be durable. That is a different write
+path, not a reordering of this one — see
+[`DECISIONS.md`](DECISIONS.md#decision-apply-then-log-then-fsync-then-acknowledge--a-redo-log-not-write-ahead-ordering).
+
+### Record format
+
+The log is a sequence of numbered segments, `<base>.000001` and up, listed
+and replayed in lexical order — the zero padding makes that numeric order.
+All integers little-endian:
+
+```
+segment header
+  magic     8 bytes   "MINDBWAL"
+  version   uint32    currently 1
+  dims      uint32    must match the engine; a mismatch refuses to start
+  run id    16 bytes  ties this segment to the snapshot it follows
+
+record
+  len       uint32    length of body
+  crc       uint32    crc32-IEEE over the four len bytes and the body
+  body      len bytes
+
+body, insert (op = 1)
+  op        uint8
+  idLen     uint32, id
+  payLen    uint32, payload
+  values    dims × float32, unit-normalized exactly as stored
+
+body, delete (op = 2)
+  op        uint8
+  idLen     uint32, id
+```
+
+Two details that are not arbitrary:
+
+- **The checksum covers the length field, not just the body.** The length is
+  read first and decides how many bytes are read next, so a checksum over
+  the body alone validates whatever the corrupt length said to read — the
+  failure then gets reported at the wrong offset, after an implausible
+  allocation on the way. `walMaxRecord` (256 MiB) bounds that allocation for
+  the case where the damage is caught but the length was read first anyway.
+- **Vectors are logged already normalized**, matching the snapshot, so
+  replay can go through the internal `store()` rather than `Insert()`.
+  Re-running `Normalize` on a unit vector is not the identity in float32, so
+  logging the caller's vector instead would make a recovered engine return
+  subtly different scores from the process that crashed — the same reason
+  [`Load`](#load) does it this way.
+
+### The write path, and group commit
+
+`Insert` and `Delete` both do: encode the record outside any lock, take
+`writeMu`, apply, buffer the record, release `writeMu`, then wait for the
+record to become durable. A `Delete` that changes nothing skips the log
+entirely.
+
+The wait is where group commit lives. Every buffered record gets a sequence
+number; a writer is finished when the durable sequence number reaches its
+own, whoever got it there. The writer that arrives while no sync is in
+flight becomes the leader: it flushes everything buffered so far, records
+how far that reaches, and runs the `fsync` **with the lock released**, so
+writers arriving meanwhile keep appending and land in the next batch.
+
+Nothing is timer-driven. A lone writer syncs immediately and pays no added
+latency; under load the batch is however many writers showed up during the
+last `fsync`, so the system self-tunes to the disk it is on.
+`BenchmarkWALInsert` measures all three arms — no log, one `fsync` per
+write, and group commit — and the numbers are in
+[`DECISIONS.md`](DECISIONS.md#decision-group-commit-with-a-leader-and-no-timer).
+
+### Recovery
+
+Replay walks the retained segments in order and applies each record through
+the engine's internal write path, so the log being replayed is not written
+back to itself. Replay is idempotent: insert and delete are blind writes
+with no read-modify-write, so re-applying a range a snapshot already covers
+converges on the same state. That is what makes the overlap left by a crash
+mid-`Save` harmless.
+
+A partial record at the end of the file is how a log is *expected* to end —
+a process killed mid-append — so replay stops there and the open succeeds.
+What matters is that the decision sticks: the damaged segment is truncated
+to the last good record and every segment after it is deleted, so the next
+restart cannot replay what this one discarded. Two recoveries over the same
+files can never disagree about what the database contains.
+
+A segment shorter than its header is the same case one step earlier: a crash
+between creating the file and syncing its header. No record can exist in it,
+so it is removed rather than treated as an unreadable log.
+
+`WALRecovery` is what replay reports back, for the startup log:
+
+```go
+type WALRecovery struct {
+    Segments   int
+    Records    int
+    Truncated  bool  // the log ended in damage; that record and everything after it is gone
+    LegacyMeta bool  // a snapshot with no .meta beside it, so the log could not be checked
+}
+```
+
+### Rotation, and the run id
+
+The failure this prevents is an operator restoring last week's snapshot next
+to this morning's log and having the log replayed over a history it never
+belonged to. Nothing about those two files looks wrong on its own.
+
+So every completed `Save` mints a 16-byte run id, stamps it into the segment
+it rotates to, and records it in a companion `<snapshot>.meta` file. Recovery
+accepts a log only when **some retained segment carries the id the meta
+names** — exactly the condition "the log reaches back to at least this
+snapshot". A mismatch refuses to start, with an error that says how to fix
+it: replace the snapshot, its meta and the log together, or delete the log
+so the snapshot stands alone.
+
+`Save`'s sequence with a log attached, every step of which is load-bearing:
+
+```
+rotate to a new segment → write the snapshot → write the meta → delete the retired segment
+```
+
+Rotating first means writes landing during the snapshot go to the new
+segment, so deleting the old one cannot lose them. The meta is written
+before the delete, never after: with the delete first, a crash in between
+leaves a meta naming a run id no remaining segment has, and the engine
+refuses to start on a set of files that is perfectly consistent. A crash
+anywhere in the sequence leaves the log covering *more* history than the
+snapshot needs, never less.
+
+The meta lives beside the snapshot rather than inside it so the snapshot
+format stays at v1 and every file already in the field still loads. The cost
+is the case it cannot check: a snapshot written before meta files existed,
+or restored without its companion, is accepted, replayed, and reported
+(`LegacyMeta`, logged as a warning) rather than refused — refusing would
+break every engine that predates the file.
+
+### Health
+
+```go
+func (e *Engine) WALEnabled() bool
+func (e *Engine) WALHealthy() bool
+```
+
+A write or `fsync` that fails marks the log unhealthy, and **it never
+becomes healthy again**. On Linux a failed `fsync` may already have dropped
+the dirty pages it could not write: the data is gone, the next call has
+nothing left to fail on, and a retry returning success proves nothing about
+the write that failed. For the same reason the error is sticky — every write
+from then on is refused rather than acknowledged on the strength of an
+`fsync` that cannot speak for the ones before it.
+
+The process does not halt. What is in memory is still correct and still
+answers every read, so it keeps serving; it just stops advertising. The
+first fault fires `Options.OnWALFault` once, from its own goroutine, which
+the server uses to flip the [health service](#flags) to `NOT_SERVING`, and
+`wal_healthy` goes false in [Stats](#stats-rpc) for anything polling that
+instead.
+
+### Opening an engine
+
+```go
+func Open(opts Options) (*Engine, WALRecovery, error)
+
+type Options struct {
+    Dims, Capacity int
+    Snapshot       string  // empty disables persistence
+    WAL            string  // segment base path; empty disables logging; requires Snapshot
+    OnWALFault     func()
+}
+```
+
+Load, then replay, then attach:
+
+1. **Load** the snapshot, or build an empty engine if there is no path or no
+   file yet. A snapshot that exists but is corrupt refuses to start, for the
+   reason in [Load](#load).
+2. **Replay** the log onto it, after checking the run id against the meta.
+3. **Attach** to the highest-numbered existing segment, or create segment 1.
+   A brand-new segment takes the snapshot's run id rather than a fresh one,
+   so the acceptance rule still holds on the next restart — minting a new id
+   here would make the engine refuse to start on files it just wrote itself.
+
+`Close` flushes and fsyncs the current segment and leaves the engine
+unusable. It does **not** retire anything; callers that want the log retired
+rather than merely flushed call `Save` first.
+
+---
+
 ## gRPC API (`pkg/api`)
 
 `Server` (`pkg/api/grpc_server.go`) implements the generated
@@ -630,7 +879,8 @@ table GetResponse     { vectors: [Vector]; }
 table StatsRequest    {}
 table StatsResponse   { vector_count: uint32; capacity: uint32; dims: uint32;
                         memory_bytes: uint64; payload_bytes: uint64;
-                        kernel_name: string; fast_int8: bool; goarch: string; }
+                        kernel_name: string; fast_int8: bool; goarch: string;
+                        wal_enabled: bool; wal_healthy: bool; }
 
 rpc_service VectorService {
   Insert(InsertRequest):     InsertResponse;
@@ -683,6 +933,12 @@ Deletes every ID in the request and returns how many actually existed
 (`deleted_count`) — deleting a nonexistent ID is not an error, it's just not
 counted.
 
+A durability failure *is* an error, and it stops the batch: the handler
+returns `codes.Internal` naming the ID it got to and how many of the
+requested IDs were deleted before it, so a caller knows exactly where to
+resume. Deletions already applied stay applied in memory — as with
+[Insert](#insert-rpc), batches here are not transactional.
+
 ### Snapshot RPC
 
 Calls `Engine.Save` at the server's configured `snapshotPath`. Returns
@@ -718,6 +974,11 @@ arguments and cannot fail.
 deployment rather than just in a log line: they let the thing operating MinDB
 report which search path is live, which on ARM is the difference between the
 cascade and a brute-force scan.
+
+`wal_enabled` and `wal_healthy` are the readiness signal in report form: a
+pod whose log has faulted is still answering searches correctly, so liveness
+says nothing, and this is what tells an operator to stop sending it writes.
+The server also drives the [gRPC health service](#flags) off the same state.
 
 There is no `segment_count`. MinDB is a flat slab, and a field that always
 reported `1` would describe a system that does not exist; FlatBuffers can
@@ -760,39 +1021,60 @@ it.
 | flag | default | meaning |
 |---|---|---|
 | `-addr` | `:50051` | gRPC listen address |
+| `-health-addr` | `:50052` | `grpc.health.v1.Health` listen address; empty disables the health service |
 | `-dims` | `768` | vector dimension; ignored if a snapshot is loaded (the snapshot's own `dims` wins) |
 | `-capacity` | `100000` | max vectors; memory for this is reserved eagerly at boot |
 | `-snapshot` | `""` | snapshot file path; empty disables persistence entirely |
 | `-snapshot-interval` | `0` | periodic auto-snapshot interval; `0` disables. Requires `-snapshot` to be set — the server refuses to start otherwise |
+| `-wal` | `""` | write-ahead log base path. Empty means `<snapshot>.wal`, so **the log is on wherever `-snapshot` is**; `off` disables it; anything else is used as given. Requires `-snapshot` — nothing retires segments without snapshots |
+
+The health service gets its own listener rather than sharing `-addr`,
+because the data server is built with `grpc.ForceServerCodec` and that codec
+would panic on a protobuf health response — see
+[`DECISIONS.md`](DECISIONS.md#decision-the-health-service-listens-on-its-own-port).
+It reports status for the empty service name and for `mindb.VectorService`,
+and flips both to `NOT_SERVING` when the log faults or the server starts
+draining. That is the endpoint a Kubernetes readiness probe should point at.
 
 ### Boot sequence
 
-1. `open(dims, capacity, snapPath)`:
-   - No `-snapshot` path given → fresh empty `core.New(dims, capacity)`.
-   - Snapshot path given but the file doesn't exist → also a fresh empty
-     engine (first run), logged as such.
-   - Snapshot path given and loads successfully → `core.Load`, using the
-     snapshot's own `dims` (a mismatched `-dims` flag is logged as a
-     warning and overridden, not treated as fatal).
-   - Snapshot path given but the file is **corrupt** (bad magic, bad
-     checksum, truncated) → the server refuses to start at all, rather than
-     silently booting empty. Booting empty here would look identical to
-     genuine data loss from the outside; refusing to start is the honest
-     failure mode.
-2. Logs `dims`, `capacity`, loaded count, and estimated RAM.
-3. Registers the gRPC server **with `grpc.ForceServerCodec(flatbuffers.FlatbuffersCodec{})`** — mandatory, since handlers return `*flatbuffers.Builder` rather than a type gRPC's default codec understands; omitting this fails at first request, not at startup.
-4. Starts a background periodic-snapshot goroutine if `-snapshot-interval`
+1. Logs which kernel is live (`name`, `fast_int8`, `goarch`) — the first
+   thing to know when a deployment's search latency looks wrong.
+2. Resolves `-wal` against `-snapshot` (see the flags table) and builds the
+   health server, which starts out `SERVING`. It is built *before* the
+   engine, because the fault callback closes over it.
+3. `core.Open` — load, replay, attach, as described in [Opening an
+   engine](#opening-an-engine). A corrupt snapshot, a log belonging to a
+   different snapshot, or a dimension change all refuse to start here rather
+   than booting a database that looks fine and isn't.
+4. Logs `dims`, `capacity`, loaded count, estimated RAM, and what recovery
+   found: how many segments and records were replayed, plus warnings for a
+   truncated log, a snapshot with no `.meta` beside it, a
+   `-snapshot-interval` of `0` (nothing retires segments until shutdown),
+   and a disabled log.
+5. Registers the gRPC server **with `grpc.ForceServerCodec(flatbuffers.FlatbuffersCodec{})`** — mandatory, since handlers return `*flatbuffers.Builder` rather than a type gRPC's default codec understands; omitting this fails at first request, not at startup.
+6. Starts the health service on `-health-addr`, on a second listener with
+   the default codec.
+7. Starts a background periodic-snapshot goroutine if `-snapshot-interval`
    is set.
-5. Serves on `-addr` in a goroutine, then blocks on either a serve error or
+8. Serves on `-addr` in a goroutine, then blocks on either a serve error or
    an OS interrupt/`SIGTERM` signal.
 
 ### Shutdown sequence
 
-On `SIGINT`/`SIGTERM`: stop the periodic-snapshot goroutine, call
-`srv.GracefulStop()` (finish in-flight RPCs, refuse new ones), *then* take
-one final `Save` if a snapshot path is configured — deliberately ordered
-after `GracefulStop` so an in-flight write RPC can't race the final
-snapshot and get missed.
+On `SIGINT`/`SIGTERM`:
+
+1. `healthSrv.Shutdown()` — every service goes `NOT_SERVING` *before* the
+   drain, so the orchestrator stops routing here while in-flight requests
+   finish rather than after.
+2. Stop the periodic-snapshot goroutine.
+3. `GracefulStop()` on the data server, then on the health server: finish
+   in-flight RPCs, refuse new ones.
+4. One final `Save` if a snapshot path is configured — deliberately ordered
+   after `GracefulStop` so an in-flight write RPC can't race the final
+   snapshot and get missed. This is also what retires the last log segment,
+   which is why it comes before the close rather than after.
+5. `engine.Close()`, which flushes and fsyncs whatever the log still holds.
 
 ---
 
@@ -825,3 +1107,24 @@ project's actual correctness contract rather than incidental coverage:
 - **`TestZeroCopyReadMatchesGeneratedAccessor`** (`pkg/api/grpc_server_test.go`)
   — the `unsafe.Slice`-based fast path must return exactly what the slow,
   bounds-checked generated accessor would.
+- **`TestHardExitKeepsEveryAcknowledgedWrite`** and
+  **`TestKilledMidWriteKeepsEveryAcknowledgedWrite`**
+  (`pkg/core/wal_test.go`) — a child process inserts, prints an ID only
+  *after* `Insert` returns, and is killed outright; the parent reopens and
+  demands every printed ID back. This is the durability claim itself, tested
+  against a real `os.Exit` and a real kill rather than a simulated one.
+- **`TestTornTailAtEveryOffset`** (`pkg/core/wal_test.go`) — truncate the
+  log at every byte offset from 0 to its full length and assert the engine
+  opens each time, with a prefix of the writes and never a torn one.
+- **`TestSilentCorruptionIsCaughtByTheChecksum`** (`pkg/core/wal_test.go`) —
+  flip a bit in the last float of a vector, which decodes perfectly well.
+  Only the CRC can catch that one, which is the point: the test fails if the
+  checksum is computed and not compared.
+- **`TestLogOrderMatchesApplyOrder`** (`pkg/core/wal_test.go`) — many
+  writers contend over a few IDs with jittered stalls injected between
+  applying and appending; the recovered engine must agree with the live one.
+  This is the test that fails when the append moves outside `writeMu`.
+- **`TestOlderSnapshotWithNewerLogRefusesToStart`** (`pkg/core/wal_test.go`)
+  — restore an older snapshot next to a live log and assert the engine
+  refuses to start, that the error names the log path, and that deleting the
+  log fixes it.

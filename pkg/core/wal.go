@@ -76,6 +76,8 @@ type wal struct {
 	syncAlone bool
 }
 
+var beforeBuffer func()
+
 // walBufferSize is one segment's write buffer. Group commit means a batch is
 // flushed as one write, so this wants to be comfortably larger than a record.
 const walBufferSize = 1 << 20
@@ -186,6 +188,13 @@ func (w *wal) openSegment(n uint64, run runID) error {
 // Callers must hold the engine's write mutex, so that the order records land in
 // the log is the order they were applied to the slab.
 func (w *wal) buffer(rec []byte) uint64 {
+	// A seam for the test that the order records reach the log is the order
+	// they reached the slab: stalling here is harmless while the caller holds
+	// the write mutex and disastrous if it does not. Nil outside that test.
+	if beforeBuffer != nil {
+		beforeBuffer()
+	}
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 

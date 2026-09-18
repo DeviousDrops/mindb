@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -324,6 +325,40 @@ func TestBitFlipEndsTheLogThere(t *testing.T) {
 	sameContents(t, contents(t, again), want)
 }
 
+func TestSilentCorruptionIsCaughtByTheChecksum(t *testing.T) {
+	const n = 8
+	h, seg := buildLog(t, n)
+	ends := recordEnds(t, seg)
+
+	// The last bytes of a record are the last float of its vector. Flipping one
+	// there leaves every length field intact, so the record still decodes and
+	// still applies -- it just applies a different vector than the one that was
+	// acknowledged. Nothing but the checksum stands between that and the slab.
+	whole, err := os.ReadFile(seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	whole[ends[4]-1] ^= 0x40
+	if err := os.WriteFile(seg, whole, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e, rec, err := Open(h.options())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer e.Close()
+	if !rec.Truncated {
+		t.Error("a corrupt record that still decodes was replayed as if it were good")
+	}
+	if rec.Records != 4 {
+		t.Errorf("replayed %d records, want 4", rec.Records)
+	}
+	if got := e.Get([]string{"k04"}); len(got) != 0 {
+		t.Errorf("k04 was applied from a damaged record: %v", got[0].Vector)
+	}
+}
+
 func TestSaveRotatesAndRetiresSegments(t *testing.T) {
 	h := newWALHarness(t)
 
@@ -405,37 +440,62 @@ func TestConcurrentWritesAllSurvive(t *testing.T) {
 }
 
 func TestLogOrderMatchesApplyOrder(t *testing.T) {
-	const writers, each = 8, 40
+	const rounds, writers, each, contested = 3, 16, 60, 8
 	h := newWALHarness(t)
-	e, _ := h.open()
 
-	// Every writer fights over one id. Whichever write lands last in the slab
-	// must also be the last one in the log, or the reopened engine disagrees
-	// with the engine that acknowledged the writes.
-	var wg sync.WaitGroup
-	for w := 0; w < writers; w++ {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
-			for i := 0; i < each; i++ {
-				n := w*each + i
-				if err := e.Insert("contested", walVec(n), []byte(fmt.Sprintf("w%d-%d", w, i))); err != nil {
-					t.Errorf("insert: %v", err)
-					return
-				}
-			}
-		}(w)
+	// The writers fight over a handful of ids. Whichever write lands last in
+	// the slab must also be the last one in the log for that id, or the
+	// reopened engine disagrees with the engine that acknowledged the writes.
+	//
+	// The stall between applying and logging is what makes that observable: it
+	// is invisible while both happen under one lock, and lets every other
+	// writer through the moment they do not. Jittered, not fixed, because equal
+	// stalls preserve the arrival order by themselves and would hide exactly
+	// the reordering being looked for. Several ids and several rounds, because
+	// only the last write to an id can show it.
+	jitter := rand.New(rand.NewSource(1))
+	var jitterMu sync.Mutex
+	beforeBuffer = func() {
+		jitterMu.Lock()
+		d := time.Duration(jitter.Intn(200)) * time.Microsecond
+		jitterMu.Unlock()
+		time.Sleep(d)
 	}
-	wg.Wait()
+	t.Cleanup(func() { beforeBuffer = nil })
 
-	want := contents(t, e)
-	e.Close()
+	for round := 0; round < rounds; round++ {
+		e, _ := h.open()
 
-	reopened, _ := h.open()
-	defer reopened.Close()
-	sameContents(t, contents(t, reopened), want)
+		var wg sync.WaitGroup
+		for w := 0; w < writers; w++ {
+			wg.Add(1)
+			go func(w int) {
+				defer wg.Done()
+				for i := 0; i < each; i++ {
+					id := fmt.Sprintf("c%d", (w+i)%contested)
+					payload := fmt.Sprintf("r%d-w%d-%d", round, w, i)
+					if err := e.Insert(id, walVec(w*each+i), []byte(payload)); err != nil {
+						t.Errorf("insert: %v", err)
+						return
+					}
+				}
+			}(w)
+		}
+		wg.Wait()
+
+		want := contents(t, e)
+		if err := e.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+
+		reopened, _ := h.open()
+		got := contents(t, reopened)
+		if err := reopened.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		sameContents(t, got, want)
+	}
 }
-
 func TestDimsChangeRefusesTheLog(t *testing.T) {
 	h := newWALHarness(t)
 	e, _ := h.open()
@@ -586,6 +646,22 @@ func TestWriteFailureMarksTheLogUnhealthy(t *testing.T) {
 	// fsync that cannot speak for the record that was already lost.
 	if err := e.Insert("c", walVec(3), nil); err == nil {
 		t.Error("a later insert was acknowledged while the log is unhealthy")
+	}
+
+	// Even with a working file handle back underneath it. This is the whole
+	// argument for making the fault stick: the write that failed is gone, and a
+	// disk that has started answering again cannot bring it back.
+	f, err := os.OpenFile(segmentName(h.wal, 1), os.O_RDWR|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.wal.mu.Lock()
+	e.wal.f = f
+	e.wal.buf = bufio.NewWriterSize(f, walBufferSize)
+	e.wal.mu.Unlock()
+
+	if err := e.Insert("d", walVec(4), nil); err == nil {
+		t.Error("the log started acknowledging writes again after a successful fsync")
 	}
 }
 

@@ -1,12 +1,30 @@
-.PHONY: all build flatc asm check-cross test
+.PHONY: all build gen flatc-image check-gen asm check-cross test
 
-all: flatc build
-
-flatc:
-	flatc --go --grpc -o pkg/ fbs/mindb.fbs
+# Generated code is committed, so a plain build needs no toolchain beyond Go.
+all: build
 
 build:
 	go build -o bin/mindb-server cmd/mindb-server/main.go
+
+# flatc must match the FlatBuffers Go runtime in go.mod. Generated code and
+# runtime are a matched pair, and a mismatch does not fail the build: it shifts
+# vtable offsets and surfaces as garbage fields at runtime. Hence a pinned
+# container rather than whatever flatc happens to be on PATH.
+FLATC_VERSION := 25.12.19
+FLATC_IMAGE   := mindb-flatc:$(FLATC_VERSION)
+
+flatc-image:
+	docker image inspect $(FLATC_IMAGE) >/dev/null 2>&1 || \
+		docker build -f build/flatc.Dockerfile -t $(FLATC_IMAGE) \
+			--build-arg FLATBUFFERS_VERSION=v$(FLATC_VERSION) .
+
+gen: flatc-image
+	docker run --rm -v "$(CURDIR)":/w -w /w $(FLATC_IMAGE) --go --grpc -o pkg/ fbs/mindb.fbs
+
+# Fails when the committed generated code does not match the schema, which is
+# the only thing stopping the two from drifting apart unnoticed.
+check-gen: gen
+	git diff --exit-code -- pkg/mindb
 
 STUB := pkg/math/dotint8_avx2_stub_amd64.go
 

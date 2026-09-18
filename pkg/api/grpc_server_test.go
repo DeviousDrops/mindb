@@ -352,3 +352,226 @@ func TestFloat32VectorHandlesMissingField(t *testing.T) {
 		t.Errorf("absent vector field returned %v, want nil", got)
 	}
 }
+
+func buildGet(ids []string) *flatbuffers.Builder {
+	b := flatbuffers.NewBuilder(0)
+	offsets := make([]flatbuffers.UOffsetT, len(ids))
+	for i, id := range ids {
+		offsets[i] = b.CreateString(id)
+	}
+	mindb.GetRequestStartIdsVector(b, len(offsets))
+	for i := len(offsets) - 1; i >= 0; i-- {
+		b.PrependUOffsetT(offsets[i])
+	}
+	vec := b.EndVector(len(offsets))
+
+	mindb.GetRequestStart(b)
+	mindb.GetRequestAddIds(b, vec)
+	b.Finish(mindb.GetRequestEnd(b))
+	return b
+}
+
+func buildStats() *flatbuffers.Builder {
+	b := flatbuffers.NewBuilder(0)
+	mindb.StatsRequestStart(b)
+	b.Finish(mindb.StatsRequestEnd(b))
+	return b
+}
+
+// getIDs reads the ids out of a GetResponse in wire order, which is the thing
+// the response ordering guarantee is actually about.
+func getIDs(resp *mindb.GetResponse) []string {
+	out := make([]string, resp.VectorsLength())
+	var v mindb.Vector
+	for i := range out {
+		resp.Vectors(&v, i)
+		out[i] = string(v.Id())
+	}
+	return out
+}
+
+func TestGetRoundTripsVectorAndPayload(t *testing.T) {
+	engine, err := core.New(testDims, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := startServer(t, engine, "")
+	ctx := ctxWithTimeout(t)
+
+	// Already unit length, so the response should match byte for byte: this test
+	// is about the wire path, not about normalization.
+	vec := make([]float32, testDims)
+	vec[3] = 1
+	payload := []byte(`{"kind":"round-trip"}`)
+
+	if _, err := client.Insert(ctx, buildInsert(
+		map[string][]float32{"a": vec},
+		map[string][]byte{"a": payload},
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.Get(ctx, buildGet([]string{"a"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.VectorsLength(); got != 1 {
+		t.Fatalf("got %d vectors, want 1", got)
+	}
+
+	var v mindb.Vector
+	if !resp.Vectors(&v, 0) {
+		t.Fatal("could not read vector 0")
+	}
+	if string(v.Id()) != "a" {
+		t.Errorf("id %q, want \"a\"", v.Id())
+	}
+	if got := v.ValuesLength(); got != testDims {
+		t.Fatalf("got %d values, want %d", got, testDims)
+	}
+	for i := 0; i < testDims; i++ {
+		if stdmath.Abs(float64(v.Values(i)-vec[i])) > 1e-6 {
+			t.Errorf("values[%d] = %v, want %v", i, v.Values(i), vec[i])
+		}
+	}
+	if string(v.PayloadBytes()) != string(payload) {
+		t.Errorf("payload %q, want %q", v.PayloadBytes(), payload)
+	}
+}
+
+func TestGetOmitsMissingIDsAndKeepsOrder(t *testing.T) {
+	engine, err := core.New(testDims, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := startServer(t, engine, "")
+	ctx := ctxWithTimeout(t)
+
+	vectors := map[string][]float32{}
+	for _, id := range []string{"a", "b", "c"} {
+		v := make([]float32, testDims)
+		v[0] = 1
+		vectors[id] = v
+	}
+	if _, err := client.Insert(ctx, buildInsert(vectors, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Delete(ctx, buildDelete([]string{"b"})); err != nil {
+		t.Fatal(err)
+	}
+
+	// "b" was deleted and "nope" never existed: both must vanish rather than
+	// fail the batch, and the survivors must stay in request order.
+	resp, err := client.Get(ctx, buildGet([]string{"c", "nope", "a", "b"}))
+	if err != nil {
+		t.Fatalf("a missing id must not be an error: %v", err)
+	}
+	got := getIDs(resp)
+	want := []string{"c", "a"}
+	if len(got) != len(want) {
+		t.Fatalf("got ids %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got ids %v, want %v", got, want)
+		}
+	}
+}
+
+func TestGetEmptyRequestReturnsEmptyResponse(t *testing.T) {
+	engine, err := core.New(testDims, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := startServer(t, engine, "")
+
+	// An empty vector and an absent one decode identically here, so this pins
+	// only what callers can rely on: no error, nothing returned.
+	resp, err := client.Get(ctxWithTimeout(t), buildGet(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.VectorsLength(); got != 0 {
+		t.Errorf("got %d vectors, want 0", got)
+	}
+}
+
+func TestGetOmitsPayloadWhenThereIsNone(t *testing.T) {
+	engine, err := core.New(testDims, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := startServer(t, engine, "")
+	ctx := ctxWithTimeout(t)
+
+	v := make([]float32, testDims)
+	v[0] = 1
+	if _, err := client.Insert(ctx, buildInsert(map[string][]float32{"bare": v}, nil)); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.Get(ctx, buildGet([]string{"bare"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got mindb.Vector
+	if !resp.Vectors(&got, 0) {
+		t.Fatal("could not read vector 0")
+	}
+	if n := got.PayloadLength(); n != 0 {
+		t.Errorf("payload length %d, want 0", n)
+	}
+}
+
+func TestStatsReportsEngineAndKernel(t *testing.T) {
+	engine, err := core.New(testDims, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := startServer(t, engine, "")
+	ctx := ctxWithTimeout(t)
+
+	v := make([]float32, testDims)
+	v[0] = 1
+	payload := []byte("0123456789")
+	if _, err := client.Insert(ctx, buildInsert(
+		map[string][]float32{"a": v},
+		map[string][]byte{"a": payload},
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.Stats(ctx, buildStats())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := engine.Stats()
+	if resp.VectorCount() != uint32(want.Count) {
+		t.Errorf("vector_count = %d, want %d", resp.VectorCount(), want.Count)
+	}
+	if resp.Capacity() != uint32(want.Capacity) {
+		t.Errorf("capacity = %d, want %d", resp.Capacity(), want.Capacity)
+	}
+	if resp.Dims() != uint32(want.Dims) {
+		t.Errorf("dims = %d, want %d", resp.Dims(), want.Dims)
+	}
+	if resp.MemoryBytes() != uint64(want.MemoryBytes) {
+		t.Errorf("memory_bytes = %d, want %d", resp.MemoryBytes(), want.MemoryBytes)
+	}
+	if resp.PayloadBytes() != uint64(len(payload)) {
+		t.Errorf("payload_bytes = %d, want %d", resp.PayloadBytes(), len(payload))
+	}
+
+	// The whole point of exposing these is that a deployment can report which
+	// search path is live, so they must reach the wire non-empty.
+	if string(resp.KernelName()) != want.KernelName || len(resp.KernelName()) == 0 {
+		t.Errorf("kernel_name = %q, want %q", resp.KernelName(), want.KernelName)
+	}
+	if resp.FastInt8() != want.FastInt8 {
+		t.Errorf("fast_int8 = %t, want %t", resp.FastInt8(), want.FastInt8)
+	}
+	if string(resp.Goarch()) != want.GoArch {
+		t.Errorf("goarch = %q, want %q", resp.Goarch(), want.GoArch)
+	}
+}

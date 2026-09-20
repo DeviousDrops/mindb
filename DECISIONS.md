@@ -796,6 +796,24 @@ times the emulator. The arm64 figures come from a native runner via a
 hand-triggered workflow, and where no native measurement exists the table says
 so rather than borrowing one.
 
+### Decision: the module path moved to the new owner before the first tag
+
+**Why:** the repository was transferred and `go.mod` still declared
+`github.com/typicallhavok/mindb`. GitHub redirects a clone, so leaving it alone
+would have worked — `go get` on the old path resolves, because the redirect
+lands on a repository whose `go.mod` names that same old path. What would not
+work is `go get` on the *new* path, which Go rejects outright when the module
+path inside `go.mod` disagrees with the path asked for.
+
+So the choice was: an honest path that breaks anyone already on the old one, or
+a working path that permanently advertises an account that no longer owns the
+code. A module path is only cheap to rename while there are no consumers, and
+there were none — the first tag had not been cut. Renaming first means
+v0.1.0 is the first thing anyone can pin and it names the right owner.
+
+The old path stops resolving from that commit on. Nothing else needed editing:
+the image name comes from `github.repository`, not a literal.
+
 ---
 
 ## What was tried and explicitly rejected

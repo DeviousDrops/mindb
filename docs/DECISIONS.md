@@ -841,8 +841,8 @@ The move surfaced what an unchecked link graph had accumulated: a pointer to a
 `LEARNING_GUIDE.md` that never existed, a `make validate` target that was never
 written, a named test in a named file where neither is real, a Go floor three
 releases stale, and a roadmap three merges behind. Those are fixed in the same
-pass. There is a link checker in the scratchpad; making it a CI job is
-outstanding work, because the class of error is clearly not self-correcting.
+pass. Nothing in CI checks any of it, which is why none of it was caught — a
+link-and-claim check belongs in the `generated` job, and is outstanding work.
 
 ---
 

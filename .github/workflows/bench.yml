@@ -1,0 +1,34 @@
+name: bench
+
+# Run by hand. Benchmarks are not a gate -- a shared runner's numbers move
+# with whatever else is on the host -- but they are the only way to get an
+# arm64 measurement without an arm64 machine on the desk, and docs/README.md
+# quotes both architectures separately.
+#
+# Read the output as a shape, not a stopwatch: what matters is that the
+# cascade beats brute force on amd64 and that it is switched off on arm64.
+on:
+  workflow_dispatch:
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      # The kernel decides whether the cascade runs at all, so it belongs in
+      # the same log as the numbers it explains.
+      - name: report the machine
+        run: |
+          go env GOARCH GOOS
+          lscpu | grep -E '^(Model name|Architecture|Flags)' | cut -c1-200 || true
+
+      - name: bench
+        run: make bench

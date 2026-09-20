@@ -54,6 +54,8 @@ tuned for.
   - [Flags](#flags)
   - [Boot sequence](#boot-sequence)
   - [Shutdown sequence](#shutdown-sequence)
+  - [Version](#version)
+  - [Container image](#container-image)
 - [Testing strategy](#testing-strategy)
 
 ---
@@ -1075,6 +1077,51 @@ On `SIGINT`/`SIGTERM`:
    snapshot and get missed. This is also what retires the last log segment,
    which is why it comes before the close rather than after.
 5. `engine.Close()`, which flushes and fsyncs whatever the log still holds.
+
+### Version
+
+`main.version` is a package-level `var` defaulting to `"dev"`, stamped at link
+time with `-ldflags "-X main.version=..."`. It is the first thing the server
+logs, before anything can fail:
+
+```
+mindb v0.1.0 (go1.25.1, linux/arm64)
+```
+
+A plain `go build` leaves it at `dev`, which is the honest answer rather than a
+placeholder version number: an unstamped binary came from somebody's working
+tree and its git state is unknown. `make image` passes `git describe`; the
+release workflow passes the tag.
+
+### Container image
+
+`build/Dockerfile` — a two-stage build producing a static binary on
+`gcr.io/distroless/static-debian12:nonroot`, about 5 MB per architecture.
+
+The builder stage is pinned to `--platform=$BUILDPLATFORM` and reads
+`TARGETARCH`, so Go cross-compiles rather than running an emulated toolchain
+under QEMU. This is only free because `CGO_ENABLED=0`, which is also what makes
+the static base possible. QEMU is still registered in CI, but only to assemble
+the manifest list.
+
+What the image decides, and what it deliberately leaves to the operator:
+
+| | |
+|---|---|
+| `ENTRYPOINT` | `/mindb-server`, with **no `CMD`** — every flag is a deployment decision, and `-snapshot` most of all: without it the server is memory-only and the log is off |
+| `USER` | `nonroot:nonroot`, uid/gid 65532 from the base image |
+| `WORKDIR` | `/data`, and **not** a `VOLUME` — that creates anonymous volumes under `docker run` and is ignored by Kubernetes. The mount has to be writable by uid 65532 (`securityContext.fsGroup`) |
+| `EXPOSE` | `50051` data, `50052` health |
+| build args | `GO_VERSION` (default `1.25`) and `VERSION` (default `dev`, stamped as above) |
+
+There is no shell in the image, so `kubectl exec` into a wedged pod gets you
+nothing; debugging goes through the health service, [`Stats`](#stats-rpc) and
+the logs. `:debug-nonroot` is the escape hatch, and it is a one-word change.
+
+`make image` builds for the host; `make image-multi` builds
+`linux/amd64,linux/arm64`. CI builds both on every push — a Dockerfile only
+exercised at release time breaks at release time — and pushes to GHCR only for
+`v*` tags. See [`DECISIONS.md`](DECISIONS.md#packaging).
 
 ---
 

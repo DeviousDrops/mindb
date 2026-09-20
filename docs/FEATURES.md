@@ -1,10 +1,15 @@
 # MinDB — feature reference
 
-This is the detailed, feature-by-feature reference for MinDB. For the
-project pitch and measured numbers, see [`docs/README.md`](docs/README.md).
-For *why* things are built this way, see [`DECISIONS.md`](DECISIONS.md) and
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). If you're new to Go and want
-an ordered path through the source, see [`LEARNING_GUIDE.md`](LEARNING_GUIDE.md).
+This is the detailed, feature-by-feature reference for MinDB: what every
+type, flag and RPC does, and what it does at the edges. It is the file to
+read when you are using MinDB or changing it.
+
+The other three docs answer different questions. For the pitch and the
+measured numbers, see [`README.md`](../README.md). For the design and the
+approaches that were measured and rejected, see
+[`ARCHITECTURE.md`](ARCHITECTURE.md). For a flat, greppable log of every
+non-obvious choice and what it cost, see [`DECISIONS.md`](DECISIONS.md) —
+this file links into it at each decision it depends on.
 
 MinDB is an embedded, in-memory, **exact** k-NN vector search engine
 exposed over gRPC. "Exact" is the load-bearing word: every search result is

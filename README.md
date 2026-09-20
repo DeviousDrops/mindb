@@ -9,7 +9,7 @@ sidecar. It caps its scale on purpose and spends the headroom on being provably 
 and cache-sympathetic rather than on an approximate index.
 
 **Status: under construction.** See the [roadmap](#roadmap). The design is settled and
-documented in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+documented in [`ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
@@ -95,7 +95,7 @@ The ARM row is the whole argument for the guard, measured rather than assumed: w
 NEON int8 kernel, the cascade's extra pass costs more than the pruning saves, so
 `HasFastInt8()` returns false and the engine takes the brute-force path. The server says
 which one is live at startup: `kernel: name=pure-go fast_int8=false goarch=arm64`. See
-[`DECISIONS.md`](../DECISIONS.md) under "Portability".
+[`DECISIONS.md`](docs/DECISIONS.md) under "Portability".
 
 ### The dot kernels, by architecture
 
@@ -206,7 +206,7 @@ Concurrent searches still run fully parallel, because RLock is shared. The one r
 a writer waits behind an in-flight scan — is the right trade for a read-dominated sidecar,
 and it's documented rather than pretended away.
 
-Full detail in [`ARCHITECTURE.md`](./ARCHITECTURE.md#concurrency-lock-free-was-evaluated-and-rejected).
+Full detail in [`ARCHITECTURE.md`](docs/ARCHITECTURE.md#concurrency-lock-free-was-evaluated-and-rejected).
 
 ---
 
@@ -258,7 +258,7 @@ today — see the note under the benchmarks.
 
 ## Wire protocol
 
-gRPC over HTTP/2 with FlatBuffers, defined in [`fbs/mindb.fbs`](../fbs/mindb.fbs):
+gRPC over HTTP/2 with FlatBuffers, defined in [`fbs/mindb.fbs`](fbs/mindb.fbs):
 
 ```flatbuffers
 table Vector          { id: string; values: [float32]; payload: [ubyte]; }

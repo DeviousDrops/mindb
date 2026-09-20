@@ -2,7 +2,7 @@ name: bench
 
 # Run by hand. Benchmarks are not a gate -- a shared runner's numbers move
 # with whatever else is on the host -- but they are the only way to get an
-# arm64 measurement without an arm64 machine on the desk, and docs/README.md
+# arm64 measurement without an arm64 machine on the desk, and README.md
 # quotes both architectures separately.
 #
 # Read the output as a shape, not a stopwatch: what matters is that the

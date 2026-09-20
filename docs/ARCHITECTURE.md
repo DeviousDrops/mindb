@@ -1,8 +1,12 @@
 # MinDB Architecture
 
-This is the design record for MinDB v2. It documents what the system does, why it does it
+This is the design record for MinDB. It documents what the system does, why it does it
 that way, and — deliberately — the approaches that were measured and rejected. If you only
 read one section, read [The thesis](#the-thesis).
+
+Its siblings: [`FEATURES.md`](FEATURES.md) is the feature-by-feature reference,
+[`DECISIONS.md`](DECISIONS.md) is the same reasoning as a flat greppable log, and
+[`README.md`](../README.md) is the pitch, the measured numbers and how to run it.
 
 Numbers marked **(measured)** come from benchmarks on the development machine and are
 reproducible with `go test -bench`. Numbers marked **(projected)** are arithmetic from the

@@ -7,9 +7,11 @@ protocol. Each entry is **decision → why → what it cost**. Where a decision
 reversed an earlier one, the earlier approach and why it was rejected is
 included, because the rejection is often more instructive than the choice.
 
-This complements [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), which is the
+This complements [`ARCHITECTURE.md`](ARCHITECTURE.md), which is the
 narrative design doc with measurements; this file is the flat list, meant to
-be skimmed or grepped.
+be skimmed or grepped. For what the code actually does rather than why, see
+[`FEATURES.md`](FEATURES.md); for the pitch and the numbers, see
+[`README.md`](../README.md).
 
 ---
 

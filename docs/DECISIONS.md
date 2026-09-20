@@ -816,6 +816,34 @@ v0.1.0 is the first thing anyone can pin and it names the right owner.
 The old path stops resolving from that commit on. Nothing else needed editing:
 the image name comes from `github.repository`, not a literal.
 
+### Decision: `README.md` at the root, every other document in `docs/`
+
+**Why:** the layout had grown by accretion — `README.md` and
+`ARCHITECTURE.md` in `docs/`, `FEATURES.md` and `DECISIONS.md` at the root
+— which meant the one file GitHub renders on the landing page was the one
+file buried in a subdirectory, and the split carried no information: nothing
+distinguished the two at the root from the two below it.
+
+The alternative was the mirror image: move everything to the root. That is
+fine at four files and unpleasant at eight, and it puts 120 KB of reference
+material in the first thing anyone sees when they clone.
+
+So: the root holds exactly one document, the one that has to be there, and it
+opens with a table pointing at the other three. `docs/` holds the reference
+material, where a fifth document can land without a discussion.
+
+**What it cost:** every relative link changed depth, including the ones in
+`Makefile`, `bench.yml`, `wal.go` and `kernel_arm64.go` that name a doc by
+path, and any external link to a doc's old URL is now dead. Worth paying once,
+at four documents, rather than later at eight.
+
+The move surfaced what an unchecked link graph had accumulated: a pointer to a
+`LEARNING_GUIDE.md` that never existed, a `make validate` target that was never
+written, a named test in a named file where neither is real, a Go floor three
+releases stale, and a roadmap three merges behind. Those are fixed in the same
+pass. There is a link checker in the scratchpad; making it a CI job is
+outstanding work, because the class of error is clearly not self-correcting.
+
 ---
 
 ## What was tried and explicitly rejected

@@ -696,6 +696,108 @@ was cheaper and more honest than building it.
 
 ---
 
+## Packaging
+
+### Decision: the builder stage runs on the build platform and Go cross-compiles
+
+**Why:** `--platform=$BUILDPLATFORM` on the first stage, `GOARCH=$TARGETARCH`
+on the `go build`. The obvious alternative — let buildx run an arm64 builder
+under QEMU and compile natively inside it — emulates the entire Go toolchain
+to produce a binary Go can cross-compile in seconds. The arm64 leg goes from
+minutes to about as long as the amd64 one.
+
+This is only free because `CGO_ENABLED=0`. With cgo there would be a C
+cross-toolchain to install and a sysroot to manage, and the emulated builder
+starts to look reasonable. MinDB has no cgo in the server binary, so it is
+free, and the same flag is what makes the static base below possible.
+
+### Decision: `distroless/static-debian12:nonroot`, not Alpine or scratch
+
+**Why:** the binary is static, so nothing in the image is needed at runtime
+except CA certificates, timezone data and a passwd entry for a non-root uid.
+That is exactly what distroless/static carries and roughly all it carries —
+about 2 MB, no shell, no package manager, no libc to keep patched. Alpine
+brings musl, busybox and apk for no benefit here and a standing patch
+obligation. `scratch` would work too, but then the non-root uid has no passwd
+entry and the certs have to be copied in by hand; distroless is that, already
+assembled.
+
+**What it cost:** there is no shell, so `kubectl exec` into a wedged pod gets
+you nothing. That is the point — the attack surface is the same emptiness —
+but it means debugging is done through the health service, the `Stats` RPC and
+the logs. `:debug-nonroot` is the escape hatch on the day it matters, and it
+is a one-word change.
+
+### Decision: no `CMD`, no `VOLUME`, and `/data` as the working directory
+
+**Why:** every flag is a deployment decision, and the one that matters most is
+`-snapshot` — without it the server is memory-only and the write-ahead log is
+off, which is a reasonable thing to want and a terrible thing to get by
+accident. A default `CMD` would pick one of those for the operator silently.
+
+`VOLUME /data` is worse than useless: under `docker run` it creates anonymous
+volumes that outlive nothing in particular, and Kubernetes ignores it
+entirely. A `WORKDIR` documents the same intent and changes no behaviour. What
+does need saying out loud is that the mount has to be writable by uid 65532.
+
+### Decision: arm64 is tested on a native runner, not under QEMU
+
+**Why:** arm64 is the deploy target and it is not the same build. `HasFastInt8`
+is false there, so the cascade never runs and the brute-force scan is what
+actually serves every query — a path that on amd64 is only ever exercised as
+the differential test's control. It deserves the same suite, not a subset.
+
+GitHub's `ubuntu-24.04-arm` runners are free for public repositories, which
+removes the reason QEMU was the plan. Under emulation the suite is roughly an
+order of magnitude slower, and `go test -race` is worse than slow: the race
+detector's timing assumptions do not survive instruction emulation, so a
+green run proves less than it appears to. A native runner gives a real
+`-race` on the architecture that will actually run in production.
+
+QEMU is still registered in the image job — but only to assemble a manifest
+list, never to compile.
+
+### Decision: the image is built on every push and pushed only on a tag
+
+**Why:** a Dockerfile that is only exercised at release time breaks at release
+time. Building it on every push and every pull request costs a few minutes of
+CI and moves that failure to the change that caused it. Publishing, by
+contrast, wants to be deliberate: GHCR gets a push only for `v*` tags, and
+`docker/metadata-action` derives `vX.Y.Z`, `vX.Y`, `latest` and a long SHA tag
+from the ref.
+
+The image name comes from `github.repository` rather than a literal, so a
+repository transfer needs no edit here — which is not hypothetical, this
+repository has had one.
+
+### Decision: the version is stamped at link time and logged first
+
+**Why:** `-X main.version`, defaulting to `dev`. A binary running on a machine
+nobody has a terminal for should be able to say what it is, and the first line
+of the startup log is where that belongs. The default is deliberately not a
+fake version number: `dev` means "this came out of somebody's working tree and
+its git state is unknown", which is true and useful, where `v0.0.0` would be
+a claim.
+
+### Decision: benchmarks are reported per architecture, each labelled with its machine
+
+**Why:** a single benchmark table implies a single number, and there isn't
+one. On amd64 with AVX2 the cascade is live and beats brute force; on arm64
+`HasFastInt8` is false, the cascade is switched off, and the same query runs
+the float32 scan. Averaging those or quoting whichever is flattering would
+describe a deployment that does not exist.
+
+So `docs/README.md` carries two tables, each naming the machine it was
+measured on, and `make bench` prints `GOARCH` before the numbers so a pasted
+result carries its own provenance.
+
+**Numbers from emulation are not published.** A benchmark run under QEMU
+times the emulator. The arm64 figures come from a native runner via a
+hand-triggered workflow, and where no native measurement exists the table says
+so rather than borrowing one.
+
+---
+
 ## What was tried and explicitly rejected
 
 Kept here so nobody re-proposes them without knowing why they didn't work.

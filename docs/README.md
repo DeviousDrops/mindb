@@ -56,11 +56,17 @@ that across thousands of random queries.
 
 ## Numbers
 
-All measured on the development machine (Intel i7-5500U, 2 cores / 4 threads, Go 1.26.5),
-N=100,000 at 768 dims, **clustered** synthetic data — uniform-random data would flatter
-these considerably.
+MinDB runs two different search paths depending on the machine, so there is no single
+number to quote. On x86-64 with AVX2 the bound-and-refine cascade is live. On arm64
+`HasFastInt8()` is false, the cascade is switched off, and every query runs the
+brute-force float32 scan. Both return identical results — the cascade is an
+optimization, not an approximation — so what changes is latency, and it changes by
+machine. Every table below names the machine it came from.
 
-**Cost of one full scan, single core:**
+### Cost of one full scan, single core
+
+Intel i7-5500U (2 cores / 4 threads), N=100,000 at 768 dims, **clustered** synthetic
+data — uniform-random data would flatter these considerably.
 
 | representation | bytes/vector | scan size | time |
 |---|---|---|---|
@@ -69,22 +75,65 @@ these considerably.
 | int8, AVX2 | 768 | 73 MB | above the memory wall (23.5 GB/s/core) |
 | 1-bit (POPCNT) | 96 | 9.2 MB | 1.0 ms |
 
-Measured end-to-end at N=20,000, dims=768 (`BenchmarkSearchPaths`, this machine): brute
-force **6.47 ms**, cascade with the AVX2 kernel **1.75 ms** — a real 3.7x, not a projection.
-
 Note the int8 row: **4x less data, twice the time.** Pure Go cannot express the
 instruction that makes int8 fast, which is why this project has assembly — and why the
 assembly lives on the int8 path rather than the float32 one.
 
-**On ARM (arm64) the cascade is off.** There is no NEON int8 kernel yet, so
-`HasFastInt8()` is false and searches run the brute-force float32 scan. Results are
-identical either way — the cascade is an optimization, not an approximation — but ARM
-latency should be read against the brute-force row above, not the cascade figure. The
-server logs which kernel is live at startup:
-`kernel: name=pure-go fast_int8=false goarch=arm64`. See
+### End-to-end search, by architecture
+
+`BenchmarkSearchPaths`, N=20,000 at 768 dims, k=10, clustered. The cascade is *forced on*
+in both rows of each machine, which is the only way to see what the `HasFastInt8()` guard
+is actually deciding.
+
+| machine | kernel | brute force | cascade | cascade vs. brute force |
+|---|---|---|---|---|
+| Intel i7-5500U, 2c/4t (dev laptop) | `avx2` | 6.47 ms | **1.75 ms** | 3.7x faster |
+| Intel Xeon Platinum 8573C, 4 vCPU (GitHub `ubuntu-latest`) | `avx2` | 2.41 ms | **1.16 ms** | 2.1x faster |
+| Arm Neoverse-N2, 4 vCPU (GitHub `ubuntu-24.04-arm`) | `pure-go` | **1.42 ms** | 1.48 ms | 4% *slower* |
+
+The ARM row is the whole argument for the guard, measured rather than assumed: with no
+NEON int8 kernel, the cascade's extra pass costs more than the pruning saves, so
+`HasFastInt8()` returns false and the engine takes the brute-force path. The server says
+which one is live at startup: `kernel: name=pure-go fast_int8=false goarch=arm64`. See
 [`DECISIONS.md`](../DECISIONS.md) under "Portability".
 
-**Where sub-millisecond becomes real** (projected from `bytes ÷ bandwidth`):
+### The dot kernels, by architecture
+
+`BenchmarkDot` and `BenchmarkDotInt8` at 768 dims, same two runners.
+
+| machine | float32 | int8 |
+|---|---|---|
+| Xeon Platinum 8573C (AVX2) | 231 ns, 26.6 GB/s | **164 ns, 23.4 GB/s** |
+| Neoverse-N2 (pure Go) | 243 ns, 25.3 GB/s | 268 ns, 14.3 GB/s |
+
+Same code, opposite conclusion. With AVX2 the int8 kernel is the faster of the two; in
+pure Go it is the slower one despite touching a quarter of the bytes, which is the
+portability problem in one line.
+
+### What durability costs
+
+`BenchmarkWALInsert`, time per acknowledged insert. "off" is no log at all, the ceiling.
+"per write" gives every writer its own `fsync`. "group commit" is the shipped path, where
+one writer flushes and syncs for everyone who arrived while the last sync was in flight.
+
+| machine | writers | off | per write | group commit |
+|---|---|---|---|---|
+| Xeon 8573C | 1 | 473 ns | 563 µs | 455 µs |
+| Xeon 8573C | 8 | 623 ns | 451 µs | **108 µs** |
+| Xeon 8573C | 64 | 626 ns | 418 µs | **17.1 µs** |
+| Neoverse-N2 | 1 | 505 ns | 754 µs | 222 µs |
+| Neoverse-N2 | 8 | 783 ns | 247 µs | **58.3 µs** |
+| Neoverse-N2 | 64 | 839 ns | 195 µs | **12.0 µs** |
+
+At one writer the last two columns are the same benchmark, which is the point: the batch
+only exists when somebody else is waiting. Both runners have network-backed storage, so
+read the shape and not the stopwatch — the absolute `fsync` cost is a property of the
+disk, and the single-writer rows in particular move around between runs. The ratio at 64
+writers is what transfers.
+
+### Where sub-millisecond becomes real
+
+Projected from `bytes ÷ bandwidth`, N=100,000 at 768 dims:
 
 | memory bandwidth | MinDB cascade | brute force |
 |---|---|---|
@@ -95,6 +144,10 @@ server logs which kernel is live at startup:
 
 Sub-millisecond *exact* k-NN at 100k × 768 needs server-class memory — and only the
 cascade gets there.
+
+Reproduce any of the above with `make bench`, which prints `GOARCH` before the numbers.
+The CI rows come from the `bench` workflow, run by hand on both runners; nothing here is
+measured under emulation, because that would time QEMU rather than MinDB.
 
 ---
 

@@ -28,6 +28,11 @@ import (
 // empty string that means "the whole server".
 const serviceName = "mindb.VectorService"
 
+// version is stamped in at link time (-X main.version). It stays "dev" for a
+// plain `go build`, which is the honest answer: an unstamped binary came from
+// somebody's working tree and its git state is unknown.
+var version = "dev"
+
 // config is what the flags parse into.
 type config struct {
 	addr       string
@@ -56,6 +61,8 @@ func main() {
 }
 
 func run(cfg config) error {
+	log.Printf("mindb %s (%s, %s/%s)", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+
 	// The kernel decides whether the cascade runs at all, so which one is live
 	// is the first thing to know when a deployment's search latency looks wrong.
 	log.Printf("kernel: name=%s fast_int8=%t goarch=%s",

@@ -11,8 +11,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/typicallhavok/mindb/pkg/core"
-	"github.com/typicallhavok/mindb/pkg/mindb"
+	"github.com/DeviousDrops/mindb/pkg/core"
+	"github.com/DeviousDrops/mindb/pkg/mindb"
 )
 
 // Server implements mindb.VectorServiceServer.

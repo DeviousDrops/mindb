@@ -1,4 +1,4 @@
-module github.com/typicallhavok/mindb
+module github.com/DeviousDrops/mindb
 
 go 1.25.0
 

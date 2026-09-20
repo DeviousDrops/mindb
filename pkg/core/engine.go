@@ -15,7 +15,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/typicallhavok/mindb/pkg/math"
+	"github.com/DeviousDrops/mindb/pkg/math"
 )
 
 var (

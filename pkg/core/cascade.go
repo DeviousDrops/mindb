@@ -4,7 +4,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/typicallhavok/mindb/pkg/math"
+	"github.com/DeviousDrops/mindb/pkg/math"
 )
 
 // guardFraction is the survivor rate above which the cascade abandons its

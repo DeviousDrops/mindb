@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/typicallhavok/mindb/pkg/math"
+	"github.com/DeviousDrops/mindb/pkg/math"
 )
 
 // normalized returns what the engine stores for v: Insert normalizes in place,

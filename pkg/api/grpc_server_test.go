@@ -16,8 +16,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	"github.com/typicallhavok/mindb/pkg/core"
-	"github.com/typicallhavok/mindb/pkg/mindb"
+	"github.com/DeviousDrops/mindb/pkg/core"
+	"github.com/DeviousDrops/mindb/pkg/mindb"
 )
 
 const testDims = 16

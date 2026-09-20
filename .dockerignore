@@ -1,0 +1,18 @@
+# The build stage copies the whole tree, so everything the compiler does not
+# need is weight in the context and a cache miss when it changes.
+.git
+.github
+.claude
+.serena
+bin
+build
+docs
+interview
+*.md
+.gitattributes
+.gitignore
+
+# Local durable state, which must never be baked into an image.
+*.mindb
+*.mindb.meta
+*.mindb.wal.*

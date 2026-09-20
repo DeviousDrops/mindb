@@ -335,6 +335,51 @@ slab.
 
 ---
 
+## Running it
+
+```
+docker run -p 50051:50051 -p 50052:50052 -v mindb-data:/data \
+  ghcr.io/deviousdrops/mindb:latest \
+  -dims 768 -capacity 100000 -snapshot /data/snap.mindb -snapshot-interval 5m
+```
+
+A static binary on `distroless/static-debian12:nonroot`: no shell, no package
+manager, ~5 MB per architecture, running as uid 65532. Published for
+`linux/amd64` and `linux/arm64` on every `v*` tag.
+
+| port | what |
+|---|---|
+| 50051 | the FlatBuffers data service |
+| 50052 | `grpc.health.v1.Health` — point the readiness probe here |
+
+Two things the flags decide that are easy to get wrong:
+
+- **`-snapshot` is what turns persistence on**, and the write-ahead log comes
+  with it by default at `<snapshot>.wal`. Without `-snapshot` the server is
+  memory-only and says so at startup. There is deliberately no default.
+- **`-snapshot-interval` should be set.** Nothing retires log segments except a
+  snapshot, so at the default of `0` the log grows until shutdown. The startup
+  log warns about this.
+
+The mount at `/data` has to be writable by uid 65532. Under Kubernetes that is
+`securityContext.fsGroup`; the readiness probe is the native gRPC one:
+
+```yaml
+readinessProbe:
+  grpc: { port: 50052, service: mindb.VectorService }
+```
+
+That probe is what takes the pod out of rotation if an `fsync` ever fails: the
+process keeps answering reads, because what is in memory is still correct, but
+it stops advertising itself as somewhere to send writes. `Stats` reports the
+same state as `wal_healthy` for anything polling instead.
+
+Building it yourself: `make image` for this machine, `make image-multi` for
+both architectures. A plain `go build` also works and needs no toolchain beyond
+Go, since the generated FlatBuffers code is committed.
+
+---
+
 ## Project layout
 
 ```

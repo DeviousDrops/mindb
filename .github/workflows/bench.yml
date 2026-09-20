@@ -9,6 +9,10 @@ name: bench
 # cascade beats brute force on amd64 and that it is switched off on arm64.
 on:
   workflow_dispatch:
+  # workflow_dispatch only fires from the default branch, so a bench/* branch
+  # is how you measure something that is not merged yet.
+  push:
+    branches: ["bench/**"]
 
 jobs:
   bench:

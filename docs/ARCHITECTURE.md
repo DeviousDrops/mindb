@@ -1,12 +1,19 @@
 # MinDB Architecture
 
-This is the design record for MinDB v2. It documents what the system does, why it does it
+This is the design record for MinDB. It documents what the system does, why it does it
 that way, and — deliberately — the approaches that were measured and rejected. If you only
 read one section, read [The thesis](#the-thesis).
 
+Its siblings: [`FEATURES.md`](FEATURES.md) is the feature-by-feature reference,
+[`DECISIONS.md`](DECISIONS.md) is the same reasoning as a flat greppable log, and
+[`README.md`](../README.md) is the pitch, the measured numbers and how to run it.
+
 Numbers marked **(measured)** come from benchmarks on the development machine and are
-reproducible with `go test -bench`. Numbers marked **(projected)** are arithmetic from the
-bandwidth model and have not been observed on that hardware.
+reproducible with `make bench`. Numbers marked **(projected)** are arithmetic from the
+bandwidth model and have not been observed on that hardware. The same benchmarks run on
+amd64 and arm64 CI runners, and those results — which disagree with each other, because
+the cascade is only live on one of them — are tabulated per machine in
+[`README.md`](../README.md#numbers).
 
 ---
 
@@ -392,12 +399,24 @@ They are listed here so nobody reintroduces them.
 
 ## Requirements
 
-**Hard floor:** Go 1.21+, any 64-bit Go platform. RAM per the layout section above.
+**Hard floor:** Go 1.25+ (whatever `go.mod` declares), any 64-bit Go platform. RAM per the
+layout section above. The generated FlatBuffers code is committed, so a build needs no
+toolchain beyond Go; `flatc` is only needed to change the schema.
 
 **For the cascade speedup:** AVX2 + FMA3 — Intel Haswell (2013)+ or AMD Excavator (2015) /
 Zen (2017)+. **AVX-512 and VNNI are not required.** Without AVX2 the engine runs correctly
-on a pure-Go fallback and warns loudly at startup, so nobody benchmarks the slow path by
-accident.
+on a pure-Go fallback and logs the live kernel at startup, so nobody benchmarks the slow
+path by accident.
+
+**On arm64 the cascade is switched off entirely.** There is no NEON int8 kernel yet, and
+measured on a Neoverse-N2 the cascade's extra pass costs more than its pruning saves, so
+`HasFastInt8()` returns false and every query takes the brute-force float32 scan. Same
+results, different path — and it is the deploy target, which is why CI runs the whole
+suite there natively.
+
+**Deployment:** a static `CGO_ENABLED=0` binary on `distroless/static-debian12:nonroot`,
+published for `linux/amd64` and `linux/arm64`. The engine is a library first; the server
+in `cmd/mindb-server` is a thin wrapper over `pkg/core`.
 
 ---
 
@@ -413,6 +432,7 @@ accident.
 | — | `Get` and `Stats` RPCs | done |
 | — | NEON `SDOT` int8 kernel for arm64 | planned |
 | — | write-ahead log: replay onto the slab at boot, retire segments on snapshot | done |
+| — | packaging: static non-root image, both architectures tested natively | done |
 | — | segmented store: write buffer, immutable segments, tombstones | planned |
 
 Each stage ships something working. Stage 2 is expected to be *slower* than stage 1 — its
@@ -424,15 +444,33 @@ job is to establish correctness before any assembly exists to blame for a wrong 
 
 The differential test is the centerpiece: **the cascade must return exactly what brute
 force returns**, across thousands of random queries and every kernel path, asserted on
-both IDs and scores. A bound-validity test asserts `lo_i ≤ true_score_i ≤ hi_i` for every
-vector; if that ever fails, the exactness guarantee is void and the project's central
-claim is false.
+both IDs and scores (`TestCascadeIsExact`, and again with deletes, at scale, and through
+the guard fallback). `TestCascadeBoundContainsTrueScore` asserts `lo_i ≤ true_score_i ≤
+hi_i` for every vector; if that ever fails, the exactness guarantee is void and the
+project's central claim is false. `TestKernelsMatchGenericReference` holds every kernel
+— AVX2, pure Go, and each variant in between — to the same reference.
 
-Alongside it: `go test -race` including a test hammering concurrent Insert/Delete/Search,
-snapshot round-trip plus a flipped-byte file rejected by checksum, and benchmarks
-reproducing the tier tables above.
+Durability is tested by killing things. `TestHardExitKeepsEveryAcknowledgedWrite` and
+`TestKilledMidWriteKeepsEveryAcknowledgedWrite` spawn a child process that either exits
+without closing the engine or is killed outright mid-write, then reopen the files and
+compare against what the child had acknowledged.
+`TestTornTailAtEveryOffset` truncates a segment at every byte offset in turn and requires
+that replay stops cleanly at the last intact record. `TestSilentCorruptionIsCaughtByTheChecksum`
+flips a byte inside a record body, and `TestOlderSnapshotWithNewerLogRefusesToStart`
+covers the case that loses data quietly: a restored snapshot beside a log that ran past
+it.
 
-Pruning-ratio claims are validated against real data — `glove-100-angular` and
-`gist-960-euclidean` (normalized) — via `make validate`, which brackets the dimension
-range around the 768-dim target. Synthetic clustered data is a reasonable proxy but it is
-not evidence.
+Alongside those: `go test -race`, including a test hammering concurrent
+Insert/Delete/Search, and snapshot round-trip plus a flipped-byte file rejected by
+checksum.
+
+CI runs the whole suite natively on **both** amd64 and arm64 — not under emulation,
+where `-race` proves little — plus `go vet` cross-built for amd64, arm64 and riscv64 to
+catch a missing build tag, a regeneration of the FlatBuffers code diffed against what is
+committed, and a two-platform image build. Benchmarks are a separate hand-run workflow,
+because a shared runner's numbers move with whatever else is on the host.
+
+**Not yet done:** pruning ratios are measured on synthetic clustered data, which is a
+reasonable proxy and not evidence. Validating them against `glove-100-angular` and
+`gist-960-euclidean` (normalized), which bracket the 768-dim target, is outstanding
+work.

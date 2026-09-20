@@ -8,8 +8,18 @@ MinDB is an exact k-NN vector engine for Go, built to run as a high-performance 
 sidecar. It caps its scale on purpose and spends the headroom on being provably correct
 and cache-sympathetic rather than on an approximate index.
 
-**Status: under construction.** See the [roadmap](#roadmap). The design is settled and
-documented in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+**Status: v0.1.0.** The engine, the gRPC service, snapshots, the write-ahead log
+and a multi-architecture container image are done and tested on amd64 and arm64.
+What is not done is in the [roadmap](#roadmap).
+
+### Documentation
+
+| | |
+|---|---|
+| this file | what MinDB is, the measured numbers, and how to run it |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | the design record: the thesis, the bound, what was measured and rejected |
+| [`docs/FEATURES.md`](docs/FEATURES.md) | the reference: every type, flag and RPC, and what each does at the edges |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | every non-obvious choice as decision — why — what it cost |
 
 ---
 
@@ -95,7 +105,7 @@ The ARM row is the whole argument for the guard, measured rather than assumed: w
 NEON int8 kernel, the cascade's extra pass costs more than the pruning saves, so
 `HasFastInt8()` returns false and the engine takes the brute-force path. The server says
 which one is live at startup: `kernel: name=pure-go fast_int8=false goarch=arm64`. See
-[`DECISIONS.md`](../DECISIONS.md) under "Portability".
+[`DECISIONS.md`](docs/DECISIONS.md) under "Portability".
 
 ### The dot kernels, by architecture
 
@@ -206,7 +216,7 @@ Concurrent searches still run fully parallel, because RLock is shared. The one r
 a writer waits behind an in-flight scan — is the right trade for a read-dominated sidecar,
 and it's documented rather than pretended away.
 
-Full detail in [`ARCHITECTURE.md`](./ARCHITECTURE.md#concurrency-lock-free-was-evaluated-and-rejected).
+Full detail in [`ARCHITECTURE.md`](docs/ARCHITECTURE.md#concurrency-lock-free-was-evaluated-and-rejected).
 
 ---
 
@@ -249,7 +259,7 @@ compression buys a full scan followed by a full rescore. Measured, then deleted.
 **Memory:** `capacity × dims × 5 bytes` + payloads — ≈368 MiB at 100k × 768, allocated
 eagerly at boot so the process fails immediately rather than under load.
 
-**Requirements:** Go 1.21+, amd64 or arm64 (and anything else Go targets, on the pure-Go
+**Requirements:** Go 1.25+ (see `go.mod`), amd64 or arm64 (and anything else Go targets, on the pure-Go
 fallback). AVX2 + FMA3 for the speedup (Haswell 2013+ / Zen 2017+); without it MinDB runs
 correctly on the fallback and logs the active kernel at startup. arm64 is on the fallback
 today — see the note under the benchmarks.
@@ -258,7 +268,7 @@ today — see the note under the benchmarks.
 
 ## Wire protocol
 
-gRPC over HTTP/2 with FlatBuffers, defined in [`fbs/mindb.fbs`](../fbs/mindb.fbs):
+gRPC over HTTP/2 with FlatBuffers, defined in [`fbs/mindb.fbs`](fbs/mindb.fbs):
 
 ```flatbuffers
 table Vector          { id: string; values: [float32]; payload: [ubyte]; }
@@ -317,8 +327,11 @@ change that.
 | 2 | bound-and-refine cascade, differential test | done |
 | 3 | Avo-generated AVX2 int8 kernel | done |
 | 4 | rotated 1-bit tier (RaBitQ-style) | deferred, research-risk |
-| — | NEON int8 kernel for arm64 | planned |
+| — | portability: kernels behind build tags, arm64 on the pure-Go path | done |
+| — | `Get` and `Stats` RPCs, gRPC health service | done |
 | — | write-ahead log | done |
+| — | packaging: static non-root image, both architectures tested natively | done |
+| — | NEON `SDOT` int8 kernel for arm64 | planned |
 | — | segmented store: write buffer, immutable segments, tombstones | planned |
 
 Stage 2 is expected to be *slower* than stage 1. Its job is to prove correctness before
@@ -339,13 +352,18 @@ slab.
 
 ```
 docker run -p 50051:50051 -p 50052:50052 -v mindb-data:/data \
-  ghcr.io/deviousdrops/mindb:latest \
+  ghcr.io/deviousdrops/mindb:v0.1.0 \
   -dims 768 -capacity 100000 -snapshot /data/snap.mindb -snapshot-interval 5m
 ```
 
 A static binary on `distroless/static-debian12:nonroot`: no shell, no package
 manager, ~5 MB per architecture, running as uid 65532. Published for
-`linux/amd64` and `linux/arm64` on every `v*` tag.
+`linux/amd64` and `linux/arm64` on every `v*` tag, and public — no registry
+credentials needed to pull. Pin the version rather than `latest`; `latest`
+moves under you on the next tag.
+
+As a library instead: `go get github.com/DeviousDrops/mindb`, then drive
+`pkg/core` directly — the server is a thin wrapper over it.
 
 | port | what |
 |---|---|
@@ -384,14 +402,16 @@ Go, since the generated FlatBuffers code is committed.
 
 ```
 mindb/
-├── cmd/mindb-server/       # boots gRPC server, loads snapshot
+├── cmd/mindb-server/       # boots gRPC server, replays the log, serves
 ├── pkg/
 │   ├── api/                # FlatBuffers gRPC service implementation
-│   ├── core/               # engine (RWMutex, free list, cascade), snapshots
+│   ├── core/               # engine (RWMutex, free list, cascade), snapshots, WAL
 │   ├── math/               # dot/normalize kernels + generated AVX2 assembly
 │   └── mindb/              # flatc-generated — do not hand-edit
 ├── fbs/mindb.fbs           # the wire contract (frozen)
-└── docs/ARCHITECTURE.md    # design record, measurements, rejected approaches
+├── build/                  # Dockerfile for the server, and one for pinned flatc
+├── .github/workflows/      # ci (both architectures, cross-vet, image) and bench
+└── docs/                   # ARCHITECTURE.md, FEATURES.md, DECISIONS.md
 ```
 
 ---

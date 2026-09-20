@@ -62,7 +62,7 @@ image-multi:
 	docker buildx build -f build/Dockerfile --platform linux/amd64,linux/arm64 \
 		--build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
 
-# The benchmarks quoted in docs/README.md. They are reported per architecture
+# The benchmarks quoted in README.md. They are reported per architecture
 # because the cascade is on with AVX2 and off without it, so the machine is
 # part of the number -- hence the banner.
 #

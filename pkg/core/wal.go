@@ -31,7 +31,7 @@ import (
 // store's only possible failure is ErrCapacityExceeded and by then the record is
 // already durable. That means splitting the allocator into reserve and fill, and
 // it means a batch of group-committed writers has to be applied in log order by
-// one of them rather than each applying its own. See DECISIONS.md.
+// one of them rather than each applying its own. See docs/DECISIONS.md.
 //
 // # Segments
 //

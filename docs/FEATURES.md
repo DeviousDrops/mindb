@@ -1,10 +1,15 @@
 # MinDB — feature reference
 
-This is the detailed, feature-by-feature reference for MinDB. For the
-project pitch and measured numbers, see [`docs/README.md`](docs/README.md).
-For *why* things are built this way, see [`DECISIONS.md`](DECISIONS.md) and
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). If you're new to Go and want
-an ordered path through the source, see [`LEARNING_GUIDE.md`](LEARNING_GUIDE.md).
+This is the detailed, feature-by-feature reference for MinDB: what every
+type, flag and RPC does, and what it does at the edges. It is the file to
+read when you are using MinDB or changing it.
+
+The other three docs answer different questions. For the pitch and the
+measured numbers, see [`README.md`](../README.md). For the design and the
+approaches that were measured and rejected, see
+[`ARCHITECTURE.md`](ARCHITECTURE.md). For a flat, greppable log of every
+non-obvious choice and what it cost, see [`DECISIONS.md`](DECISIONS.md) —
+this file links into it at each decision it depends on.
 
 MinDB is an embedded, in-memory, **exact** k-NN vector search engine
 exposed over gRPC. "Exact" is the load-bearing word: every search result is
@@ -57,6 +62,7 @@ tuned for.
   - [Version](#version)
   - [Container image](#container-image)
 - [Testing strategy](#testing-strategy)
+  - [What CI runs](#what-ci-runs)
 
 ---
 
@@ -1139,11 +1145,17 @@ project's actual correctness contract rather than incidental coverage:
   true score must always land inside `[approx−ρ, approx+ρ]`. This is the
   property the entire cascade's correctness rests on; if this ever fails,
   the cascade can silently drop correct answers.
-- **`TestDotInt8AVX2MatchesGeneric`** (`pkg/math/kernel_avx2_test.go`) — the
-  generated AVX2 kernel must agree with the pure-Go reference across
-  dimension sizes that straddle its internal 32-element block/tail
-  boundary, since that's exactly where a hand-written-assembly-generator
-  bug would show up.
+- **`TestKernelsMatchGenericReference`** (`pkg/math/kernel_crosscheck_test.go`)
+  — whatever `DotInt8` dispatches to on this machine, plus every SIMD
+  kernel the architecture compiled in, must agree with the pure-Go
+  reference. `dotInt8Generic` is the oracle; everything else is an
+  optimization of it. The dimensions tested straddle every block and tail
+  boundary a kernel has — the 8-wide pure-Go unroll, the AVX2 kernel's
+  32-element block — because that is exactly where an
+  assembly-generator bug shows up. On an architecture with no SIMD kernel
+  it compares the pure-Go loop against itself, which is tautological on
+  purpose: it starts failing the day a NEON kernel lands or the dispatch
+  wiring breaks, with nobody having to remember to write it then.
 - **`TestConcurrentHammer`** (`pkg/core/engine_test.go`) — concurrent
   `Insert`/`Delete`/`Search` under load, aimed at the exact class of bug
   the RWMutex redesign exists to rule out.
@@ -1175,3 +1187,19 @@ project's actual correctness contract rather than incidental coverage:
   — restore an older snapshot next to a live log and assert the engine
   refuses to start, that the error names the log path, and that deleting the
   log fixes it.
+
+### What CI runs
+
+`.github/workflows/ci.yml`, on every push and pull request:
+
+| job | what it catches |
+|---|---|
+| `test` on `ubuntu-latest` **and** `ubuntu-24.04-arm` | the suite, `go vet` and `go test -race`, natively on both architectures. arm64 is the deploy target and takes a different search path, so it gets the same scrutiny rather than a subset |
+| `cross` | `go vet` cross-built for amd64, arm64 and riscv64. A missing build tag on an architecture-specific file is invisible to a native build — that is exactly how the arm64 build once stayed broken |
+| `generated` | regenerates the FlatBuffers code with pinned `flatc` and diffs it against what is committed. A runtime/`flatc` mismatch does not fail the build; it shifts vtable offsets and surfaces as garbage fields at runtime |
+| `image` | builds `build/Dockerfile` for both platforms, and pushes to GHCR only on a `v*` tag |
+
+Benchmarks are deliberately **not** a gate. `.github/workflows/bench.yml` is
+hand-run, reports the machine before the numbers, and exists because arm64
+figures are otherwise unobtainable without an arm64 machine on the desk. Nothing
+is measured under emulation, which would time QEMU rather than MinDB.

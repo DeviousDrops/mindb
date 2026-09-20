@@ -10,7 +10,7 @@ package math
 // dotprod, which the Ampere Altra parts MinDB is deployed on do have. That is a
 // separate track; this file exists so the dispatch is already wired for it and
 // so "arm64 falls back" is a decision rather than a fall-through. See
-// DECISIONS.md, "Portability".
+// docs/DECISIONS.md, "Portability".
 const (
 	hasFastInt8 = false
 	kernelName  = "pure-go"

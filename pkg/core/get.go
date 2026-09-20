@@ -3,7 +3,7 @@ package core
 import (
 	"runtime"
 
-	"github.com/typicallhavok/mindb/pkg/math"
+	"github.com/DeviousDrops/mindb/pkg/math"
 )
 
 // Record is a stored vector, as returned by Get.

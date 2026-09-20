@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/typicallhavok/mindb/pkg/math"
+	"github.com/DeviousDrops/mindb/pkg/math"
 )
 
 func randVec(r *rand.Rand, dims int) []float32 {

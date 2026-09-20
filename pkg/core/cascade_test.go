@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/typicallhavok/mindb/pkg/math"
+	"github.com/DeviousDrops/mindb/pkg/math"
 )
 
 // clusteredVec builds vectors that sit in tight clusters.

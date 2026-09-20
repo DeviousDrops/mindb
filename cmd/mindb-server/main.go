@@ -18,10 +18,10 @@ import (
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
-	"github.com/typicallhavok/mindb/pkg/api"
-	"github.com/typicallhavok/mindb/pkg/core"
-	"github.com/typicallhavok/mindb/pkg/math"
-	"github.com/typicallhavok/mindb/pkg/mindb"
+	"github.com/DeviousDrops/mindb/pkg/api"
+	"github.com/DeviousDrops/mindb/pkg/core"
+	"github.com/DeviousDrops/mindb/pkg/math"
+	"github.com/DeviousDrops/mindb/pkg/mindb"
 )
 
 // serviceName is what the health service reports status for, alongside the

@@ -1,0 +1,56 @@
+goos: linux
+goarch: amd64
+pkg: github.com/DeviousDrops/mindb/pkg/math
+cpu: 13th Gen Intel(R) Core(TM) i7-13700H
+BenchmarkDot/128-20    	26382234	        43.82 ns/op	23367.53 MB/s
+BenchmarkDot/128-20    	28443133	        39.83 ns/op	25707.63 MB/s
+BenchmarkDot/128-20    	34935963	        39.75 ns/op	25763.57 MB/s
+BenchmarkDot/128-20    	28693892	        41.76 ns/op	24521.78 MB/s
+BenchmarkDot/128-20    	29458022	        42.72 ns/op	23968.85 MB/s
+BenchmarkDot/128-20    	33980605	        40.83 ns/op	25080.79 MB/s
+BenchmarkDot/128-20    	35254023	        43.11 ns/op	23750.79 MB/s
+BenchmarkDot/128-20    	31536213	        45.38 ns/op	22562.81 MB/s
+BenchmarkDot/128-20    	24972373	        42.25 ns/op	24238.46 MB/s
+BenchmarkDot/128-20    	33030930	        41.75 ns/op	24525.45 MB/s
+BenchmarkDot/384-20    	 9256077	       136.2 ns/op	22561.49 MB/s
+BenchmarkDot/384-20    	 9231538	       134.3 ns/op	22873.12 MB/s
+BenchmarkDot/384-20    	10654958	       128.1 ns/op	23982.58 MB/s
+BenchmarkDot/384-20    	10092285	       133.5 ns/op	23019.60 MB/s
+BenchmarkDot/384-20    	 9434497	       126.1 ns/op	24365.60 MB/s
+BenchmarkDot/384-20    	 8132805	       125.9 ns/op	24405.44 MB/s
+BenchmarkDot/384-20    	 9751197	       117.8 ns/op	26080.56 MB/s
+BenchmarkDot/384-20    	 8668130	       128.5 ns/op	23914.14 MB/s
+BenchmarkDot/384-20    	 8363662	       136.4 ns/op	22527.85 MB/s
+BenchmarkDot/384-20    	10096218	       131.0 ns/op	23457.20 MB/s
+BenchmarkDot/768-20    	 5054239	       252.2 ns/op	24360.30 MB/s
+BenchmarkDot/768-20    	 4604764	       242.6 ns/op	25324.14 MB/s
+BenchmarkDot/768-20    	 4979671	       234.1 ns/op	26249.35 MB/s
+BenchmarkDot/768-20    	 5048817	       235.0 ns/op	26145.94 MB/s
+BenchmarkDot/768-20    	 4484674	       248.1 ns/op	24767.90 MB/s
+BenchmarkDot/768-20    	 4598240	       252.2 ns/op	24366.03 MB/s
+BenchmarkDot/768-20    	 4318515	       236.7 ns/op	25955.50 MB/s
+BenchmarkDot/768-20    	 5070067	       218.3 ns/op	28147.18 MB/s
+BenchmarkDot/768-20    	 5143258	       224.8 ns/op	27332.77 MB/s
+BenchmarkDot/768-20    	 4633512	       222.8 ns/op	27580.41 MB/s
+BenchmarkDotInt8/128-20         	 9424365	       116.6 ns/op	5491.13 MB/s
+BenchmarkDotInt8/128-20         	 9893508	       116.3 ns/op	5501.74 MB/s
+BenchmarkDotInt8/128-20         	10505622	       113.4 ns/op	5645.97 MB/s
+BenchmarkDotInt8/128-20         	16616444	       116.3 ns/op	5502.39 MB/s
+BenchmarkDotInt8/128-20         	10803122	       115.6 ns/op	5538.37 MB/s
+BenchmarkDotInt8/128-20         	 9392733	       115.5 ns/op	5539.67 MB/s
+BenchmarkDotInt8/128-20         	 9360211	       118.1 ns/op	5418.37 MB/s
+BenchmarkDotInt8/128-20         	 9186612	       115.4 ns/op	5547.93 MB/s
+BenchmarkDotInt8/128-20         	10045806	       114.5 ns/op	5588.95 MB/s
+BenchmarkDotInt8/128-20         	 9810195	       116.1 ns/op	5514.72 MB/s
+BenchmarkDotInt8/768-20         	 8227210	       145.6 ns/op	26381.57 MB/s
+BenchmarkDotInt8/768-20         	 7722460	       138.2 ns/op	27783.39 MB/s
+BenchmarkDotInt8/768-20         	 8666691	       140.0 ns/op	27433.04 MB/s
+BenchmarkDotInt8/768-20         	 8455995	       137.2 ns/op	27979.70 MB/s
+BenchmarkDotInt8/768-20         	 8480016	       145.6 ns/op	26375.81 MB/s
+BenchmarkDotInt8/768-20         	 7863840	       139.5 ns/op	27526.22 MB/s
+BenchmarkDotInt8/768-20         	 8649487	       140.8 ns/op	27271.92 MB/s
+BenchmarkDotInt8/768-20         	 8477307	       138.1 ns/op	27812.65 MB/s
+BenchmarkDotInt8/768-20         	 8174787	       141.9 ns/op	27070.24 MB/s
+BenchmarkDotInt8/768-20         	 8465617	       144.9 ns/op	26503.17 MB/s
+PASS
+ok  	github.com/DeviousDrops/mindb/pkg/math	68.324s

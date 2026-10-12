@@ -1,0 +1,116 @@
+goos: linux
+goarch: amd64
+pkg: github.com/DeviousDrops/mindb/pkg/core
+cpu: 13th Gen Intel(R) Core(TM) i7-13700H
+BenchmarkSearchPaths/bruteforce-20         	     705	   1587987 ns/op	    5797 B/op	      47 allocs/op
+BenchmarkSearchPaths/bruteforce-20         	     690	   1590021 ns/op	    5855 B/op	      47 allocs/op
+BenchmarkSearchPaths/bruteforce-20         	     620	   1676743 ns/op	    5802 B/op	      47 allocs/op
+BenchmarkSearchPaths/bruteforce-20         	     681	   1680511 ns/op	    5798 B/op	      47 allocs/op
+BenchmarkSearchPaths/bruteforce-20         	     603	   1686072 ns/op	    5814 B/op	      47 allocs/op
+BenchmarkSearchPaths/bruteforce-20         	     718	   1584040 ns/op	    5795 B/op	      47 allocs/op
+BenchmarkSearchPaths/bruteforce-20         	     680	   1611344 ns/op	    5799 B/op	      47 allocs/op
+BenchmarkSearchPaths/bruteforce-20         	     740	   1645020 ns/op	    5794 B/op	      47 allocs/op
+BenchmarkSearchPaths/bruteforce-20         	     670	   1657870 ns/op	    5797 B/op	      47 allocs/op
+BenchmarkSearchPaths/bruteforce-20         	     693	   1616148 ns/op	    5797 B/op	      47 allocs/op
+BenchmarkSearchPaths/cascade-20            	    1399	    808615 ns/op	    6480 B/op	      47 allocs/op
+BenchmarkSearchPaths/cascade-20            	    1329	    842972 ns/op	    6484 B/op	      47 allocs/op
+BenchmarkSearchPaths/cascade-20            	    1392	    821468 ns/op	    6480 B/op	      47 allocs/op
+BenchmarkSearchPaths/cascade-20            	    1234	    816524 ns/op	    6489 B/op	      47 allocs/op
+BenchmarkSearchPaths/cascade-20            	    1274	   1128200 ns/op	    6488 B/op	      47 allocs/op
+BenchmarkSearchPaths/cascade-20            	    1344	    842609 ns/op	    6483 B/op	      47 allocs/op
+BenchmarkSearchPaths/cascade-20            	    1407	    821219 ns/op	    6479 B/op	      47 allocs/op
+BenchmarkSearchPaths/cascade-20            	    1340	    801135 ns/op	    6483 B/op	      47 allocs/op
+BenchmarkSearchPaths/cascade-20            	    1333	    814145 ns/op	    6483 B/op	      47 allocs/op
+BenchmarkSearchPaths/cascade-20            	    1366	    852367 ns/op	    6482 B/op	      47 allocs/op
+BenchmarkWALInsert/off/writers=1-20        	 2555829	       419.0 ns/op
+BenchmarkWALInsert/off/writers=1-20        	 2685578	       413.8 ns/op
+BenchmarkWALInsert/off/writers=1-20        	 2666292	       443.6 ns/op
+BenchmarkWALInsert/off/writers=1-20        	 2947148	       411.9 ns/op
+BenchmarkWALInsert/off/writers=1-20        	 2446705	       412.1 ns/op
+BenchmarkWALInsert/off/writers=1-20        	 2558542	       459.6 ns/op
+BenchmarkWALInsert/off/writers=1-20        	 2415957	       414.7 ns/op
+BenchmarkWALInsert/off/writers=1-20        	 2793122	       440.8 ns/op
+BenchmarkWALInsert/off/writers=1-20        	 2727927	       406.1 ns/op
+BenchmarkWALInsert/off/writers=1-20        	 2843499	       431.6 ns/op
+BenchmarkWALInsert/off/writers=8-20        	 2553120	       485.4 ns/op
+BenchmarkWALInsert/off/writers=8-20        	 2503782	       483.5 ns/op
+BenchmarkWALInsert/off/writers=8-20        	 2491107	       469.0 ns/op
+BenchmarkWALInsert/off/writers=8-20        	 2552935	       472.3 ns/op
+BenchmarkWALInsert/off/writers=8-20        	 2522511	       480.3 ns/op
+BenchmarkWALInsert/off/writers=8-20        	 2536866	       491.8 ns/op
+BenchmarkWALInsert/off/writers=8-20        	 2412097	       483.6 ns/op
+BenchmarkWALInsert/off/writers=8-20        	 2544915	       480.1 ns/op
+BenchmarkWALInsert/off/writers=8-20        	 2472813	       466.5 ns/op
+BenchmarkWALInsert/off/writers=8-20        	 2498292	       479.0 ns/op
+BenchmarkWALInsert/off/writers=64-20       	 2433296	       499.6 ns/op
+BenchmarkWALInsert/off/writers=64-20       	 2410758	       477.8 ns/op
+BenchmarkWALInsert/off/writers=64-20       	 2390251	       482.6 ns/op
+BenchmarkWALInsert/off/writers=64-20       	 2473150	       514.1 ns/op
+BenchmarkWALInsert/off/writers=64-20       	 2388181	       462.7 ns/op
+BenchmarkWALInsert/off/writers=64-20       	 2472351	       492.7 ns/op
+BenchmarkWALInsert/off/writers=64-20       	 2480126	       488.7 ns/op
+BenchmarkWALInsert/off/writers=64-20       	 2497906	       457.9 ns/op
+BenchmarkWALInsert/off/writers=64-20       	 2440984	       477.8 ns/op
+BenchmarkWALInsert/off/writers=64-20       	 2464844	       493.9 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=1-20         	  808760	      1388 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=1-20         	  924164	      1336 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=1-20         	  824769	      1318 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=1-20         	  884650	      1289 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=1-20         	  903439	      1283 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=1-20         	  905217	      1381 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=1-20         	  814962	      1305 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=1-20         	  770232	      1302 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=1-20         	  933151	      1300 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=1-20         	  922798	      1365 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=8-20         	  682232	      1479 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=8-20         	  765770	      1493 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=8-20         	  791494	      1470 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=8-20         	  762646	      1605 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=8-20         	  810733	      1499 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=8-20         	  800017	      1445 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=8-20         	  756922	      1535 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=8-20         	  796891	      1464 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=8-20         	  712935	      1474 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=8-20         	  773704	      1510 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=64-20        	  807547	      1467 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=64-20        	  794305	      1458 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=64-20        	  809146	      1473 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=64-20        	  803095	      1587 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=64-20        	  788006	      1501 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=64-20        	  670028	      1531 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=64-20        	  809404	      1574 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=64-20        	  770336	      1576 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=64-20        	  699104	      1553 ns/op
+BenchmarkWALInsert/fsync-per-write/writers=64-20        	  784464	      1536 ns/op
+BenchmarkWALInsert/group-commit/writers=1-20            	  860767	      1354 ns/op
+BenchmarkWALInsert/group-commit/writers=1-20            	  766796	      1425 ns/op
+BenchmarkWALInsert/group-commit/writers=1-20            	  891310	      1422 ns/op
+BenchmarkWALInsert/group-commit/writers=1-20            	  846770	      1266 ns/op
+BenchmarkWALInsert/group-commit/writers=1-20            	  901459	      1397 ns/op
+BenchmarkWALInsert/group-commit/writers=1-20            	  874662	      1464 ns/op
+BenchmarkWALInsert/group-commit/writers=1-20            	  789044	      1619 ns/op
+BenchmarkWALInsert/group-commit/writers=1-20            	  864759	      1338 ns/op
+BenchmarkWALInsert/group-commit/writers=1-20            	  767143	      1323 ns/op
+BenchmarkWALInsert/group-commit/writers=1-20            	  898581	      1323 ns/op
+BenchmarkWALInsert/group-commit/writers=8-20            	  750286	      1539 ns/op
+BenchmarkWALInsert/group-commit/writers=8-20            	  732934	      1548 ns/op
+BenchmarkWALInsert/group-commit/writers=8-20            	  804679	      1598 ns/op
+BenchmarkWALInsert/group-commit/writers=8-20            	  769065	      1559 ns/op
+BenchmarkWALInsert/group-commit/writers=8-20            	  810201	      1622 ns/op
+BenchmarkWALInsert/group-commit/writers=8-20            	  835879	      1571 ns/op
+BenchmarkWALInsert/group-commit/writers=8-20            	  772510	      1535 ns/op
+BenchmarkWALInsert/group-commit/writers=8-20            	  735760	      1562 ns/op
+BenchmarkWALInsert/group-commit/writers=8-20            	  779151	      1562 ns/op
+BenchmarkWALInsert/group-commit/writers=8-20            	  673933	      1550 ns/op
+BenchmarkWALInsert/group-commit/writers=64-20           	  700897	      1597 ns/op
+BenchmarkWALInsert/group-commit/writers=64-20           	  757218	      1566 ns/op
+BenchmarkWALInsert/group-commit/writers=64-20           	  753139	      1554 ns/op
+BenchmarkWALInsert/group-commit/writers=64-20           	  767239	      1562 ns/op
+BenchmarkWALInsert/group-commit/writers=64-20           	  772935	      1546 ns/op
+BenchmarkWALInsert/group-commit/writers=64-20           	  781860	      1597 ns/op
+BenchmarkWALInsert/group-commit/writers=64-20           	  821162	      1553 ns/op
+BenchmarkWALInsert/group-commit/writers=64-20           	  621519	      1640 ns/op
+BenchmarkWALInsert/group-commit/writers=64-20           	  739507	      1554 ns/op
+BenchmarkWALInsert/group-commit/writers=64-20           	  742353	      1588 ns/op
+PASS
+ok  	github.com/DeviousDrops/mindb/pkg/core	174.896s

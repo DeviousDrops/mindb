@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/DeviousDrops/mindb/pkg/math"
 )
@@ -84,6 +85,11 @@ type Engine struct {
 
 	heaps   sync.Pool // *topK, reused across queries
 	scratch sync.Pool // *[]float32, approximate scores indexed by slot
+
+	// obs receives timings. Set by Open before the engine is shared and never
+	// changed after, so it is read without a lock. Nil for engines built with
+	// New or Load directly.
+	obs Observer
 }
 
 // New allocates an engine for exactly capacity vectors of the given dimension.
@@ -178,6 +184,10 @@ func (e *Engine) Insert(id string, vec []float32, payload []byte) error {
 	// nothing about it depends on engine state.
 	rec := appendInsert(nil, id, buf, payload)
 
+	var start time.Time
+	if e.obs != nil {
+		start = time.Now()
+	}
 	e.writeMu.Lock()
 	// Applied before it is logged. store's only failure is ErrCapacityExceeded,
 	// and taking it here means the log never carries a record that cannot be
@@ -188,6 +198,9 @@ func (e *Engine) Insert(id string, vec []float32, payload []byte) error {
 	}
 	seq := e.wal.buffer(rec)
 	e.writeMu.Unlock()
+	if e.obs != nil {
+		e.obs.WriteApply(time.Since(start))
+	}
 
 	return e.wal.syncTo(seq)
 }
@@ -265,6 +278,10 @@ func (e *Engine) Delete(id string) (bool, error) {
 
 	rec := appendDelete(nil, id)
 
+	var start time.Time
+	if e.obs != nil {
+		start = time.Now()
+	}
 	e.writeMu.Lock()
 	existed := e.deleteSlot(id)
 	if !existed {
@@ -276,6 +293,9 @@ func (e *Engine) Delete(id string) (bool, error) {
 	}
 	seq := e.wal.buffer(rec)
 	e.writeMu.Unlock()
+	if e.obs != nil {
+		e.obs.WriteApply(time.Since(start))
+	}
 
 	return true, e.wal.syncTo(seq)
 }
@@ -320,9 +340,21 @@ func (e *Engine) Search(query []float32, k int) ([]Result, error) {
 		return nil, ErrZeroVector
 	}
 
+	// Deferred before the lock's own defer so it runs after RUnlock: the
+	// observer is never called with the read lock held.
+	var ev SearchEvent
+	if e.obs != nil {
+		start := time.Now()
+		defer func() {
+			ev.Duration = time.Since(start)
+			e.obs.Search(ev)
+		}()
+	}
+
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	ev.Live = e.count
 	if e.count == 0 {
 		return nil, nil
 	}
@@ -332,7 +364,12 @@ func (e *Engine) Search(query []float32, k int) ([]Result, error) {
 
 	var best *topK
 	if e.useCascade {
-		best, _ = e.searchCascade(q, k)
+		var survivors int
+		best, survivors = e.searchCascade(q, k)
+		ev.Path, ev.Survivors = PathCascade, survivors
+		if float64(survivors) > guardFraction*float64(e.count) {
+			ev.Path = PathFallback
+		}
 	} else {
 		best = e.scan(q, k)
 	}

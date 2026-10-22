@@ -331,6 +331,8 @@ change that.
 | — | `Get` and `Stats` RPCs, gRPC health service | done |
 | — | write-ahead log | done |
 | — | packaging: static non-root image, both architectures tested natively | done |
+| — | observability: Prometheus metrics, `/proc/diskstats`, Grafana dashboard | done |
+| — | Kubernetes: StatefulSet + PVC, probes, in-cluster Prometheus and Grafana | done |
 | — | NEON `SDOT` int8 kernel for arm64 | planned |
 | — | segmented store: write buffer, immutable segments, tombstones | planned |
 
@@ -369,6 +371,7 @@ As a library instead: `go get github.com/DeviousDrops/mindb`, then drive
 |---|---|
 | 50051 | the FlatBuffers data service |
 | 50052 | `grpc.health.v1.Health` — point the readiness probe here |
+| 50053 | Prometheus `/metrics` over HTTP — see [Observability](#observability) |
 
 Two things the flags decide that are easy to get wrong:
 
@@ -398,16 +401,109 @@ Go, since the generated FlatBuffers code is committed.
 
 ---
 
+## Observability
+
+`-metrics-addr` (default `:50053`) serves Prometheus metrics at `/metrics`. They come
+from four places, and the point is to be able to follow one write all the way down:
+
+| layer | source | what it answers |
+|---|---|---|
+| RPC | gRPC interceptor | requests, errors and handler latency per method |
+| engine | `core.Observer` hooks | group-commit batch size, fsync vs `write()` time, lock wait, search latency by path, cascade survivor ratio, snapshot time |
+| process | `/proc/self/io` | bytes MinDB caused to hit storage → write amplification |
+| device | `/proc/diskstats` | write latency, queue depth, utilization and cache flushes on the block device under `-snapshot` |
+
+The device is found by `stat`ing the data directory and matching its major:minor in
+`/proc/diskstats`; if it is a partition, the whole disk is reported too, because that is
+where flushes are counted. On overlayfs, tmpfs or anything else without a block device
+the server logs why and runs without disk metrics.
+
+A Prometheus + Grafana stack with a ready dashboard, and a load generator that ramps
+writers 1 → 2 → 4 … so group commit is visible as it kicks in:
+
+```
+docker compose -f deploy/observability/docker-compose.yml up --build
+go run ./cmd/mindb-load -dims 768 -writers 64      # then open http://localhost:3000
+```
+
+![Write path: records vs fsyncs, group-commit batch size, where Insert time goes, fsync latency, write amplification](docs/dashboard-write-path.png)
+
+![Data device and search: device write latency, queue depth, flushes vs fsyncs, search latency by path, cascade survivor ratio](docs/dashboard-device-search.png)
+
+*The dashboard during a `mindb-load` ramp, MinDB running as a StatefulSet on Docker
+Desktop's Kubernetes.*
+
+### What the metrics found
+
+Under mixed load, group commit barely batched. The breakdown, 128 dims, 15 s per
+row, on a 13th Gen i7 laptop NVMe under WSL2:
+
+| load | inserts/s | batch size | lock wait per insert | fsync |
+|---|---|---|---|---|
+| 64 writers, no searches | 21,559 | 30.9 | 0.01 ms | 1.32 ms |
+| 8 writers, 2 searchers | 1,922 | 3.1 | 1.27 ms | 1.46 ms |
+| 64 writers, 2 searchers | 7,838 | 12.6 | **4.66 ms** | 1.50 ms |
+
+Two searchers cut write throughput by 64% while fsync barely moved.
+
+The disk was never the bottleneck: fsync stayed at 1.3-1.5 ms throughout. Every
+write takes the slab's exclusive lock, and an exclusive lock waits for every in-flight
+search to finish. Because `writeMu` makes writers take that lock one at a time, they
+also reach the log one at a time, so group commit has less to batch. Write
+amplification rises with it: each fsync of a ~0.5 KiB record re-writes the whole 4 KiB
+tail page.
+
+This is the contention the segmented-store roadmap item exists to remove; now it has a
+number. The metric to watch is `mindb_write_apply_duration_seconds` against
+`mindb_wal_fsync_duration_seconds`.
+
+---
+
+## Kubernetes
+
+`deploy/k8s` runs MinDB as a one-replica StatefulSet with its snapshot and log on a
+PersistentVolumeClaim, plus Prometheus and Grafana in the same namespace. On a local
+[kind](https://kind.sigs.k8s.io) cluster:
+
+```
+kind create cluster --name mindb
+docker build -f build/Dockerfile -t mindb:dev . && kind load docker-image mindb:dev --name mindb
+kubectl apply -k deploy/k8s
+kubectl -n mindb create configmap grafana-dashboards \
+  --from-file=deploy/observability/grafana/dashboards/mindb.json --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n mindb port-forward svc/mindb-grpc 50051 & kubectl -n mindb port-forward svc/grafana 3000
+```
+
+The probes are split on purpose:
+
+| probe | checks | why |
+|---|---|---|
+| startup | gRPC health, up to 5 min | the health port opens only after snapshot load and log replay |
+| readiness | gRPC health for `mindb.VectorService` | goes false when an fsync fails, so writes stop being routed here |
+| liveness | HTTP `/metrics` | **not** the health service: a faulted log is permanent, and a restart would discard a correct in-memory engine |
+
+Two Services: `mindb` is headless with `publishNotReadyAddresses`, so `mindb-0.mindb`
+resolves and Prometheus keeps scraping a pod that has gone unready — which is when its
+metrics matter most. `mindb-grpc` is what clients use, and only routes to ready pods.
+
+---
+
 ## Project layout
 
 ```
 mindb/
 ├── cmd/mindb-server/       # boots gRPC server, replays the log, serves
+├── cmd/mindb-load/         # load generator: ramped writers + searchers
 ├── pkg/
 │   ├── api/                # FlatBuffers gRPC service implementation
 │   ├── core/               # engine (RWMutex, free list, cascade), snapshots, WAL
+│   ├── diskstats/          # /proc/diskstats and /proc/self/io parsers
 │   ├── math/               # dot/normalize kernels + generated AVX2 assembly
+│   ├── metrics/            # counters, gauges, histograms, Prometheus text format
+│   ├── telemetry/          # engine/gRPC/disk/process → metrics
 │   └── mindb/              # flatc-generated — do not hand-edit
+├── deploy/observability/   # Prometheus + Grafana compose stack and dashboard
+├── deploy/k8s/             # StatefulSet, Services, Prometheus, Grafana (kustomize)
 ├── fbs/mindb.fbs           # the wire contract (frozen)
 ├── build/                  # Dockerfile for the server, and one for pinned flatc
 ├── .github/workflows/      # ci (both architectures, cross-vet, image) and bench
@@ -424,5 +520,6 @@ vectors. Reach for MinDB when you want exact answers on a bounded corpus with no
 tuning, no index build time, and no approximation to explain to anyone. Reach for HNSW
 when `N` is large and 0.97 recall is fine.
 
-Writes block behind in-flight scans. There is no replication, no sharding, and no
+Writes block behind in-flight scans — measured in [Observability](#what-the-metrics-found):
+two concurrent searchers cut write throughput by 64%. There is no replication, no sharding, and no
 multi-tenancy. Capacity is fixed at boot.

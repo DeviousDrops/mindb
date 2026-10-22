@@ -846,6 +846,117 @@ link-and-claim check belongs in the `generated` job, and is outstanding work.
 
 ---
 
+## Observability
+
+### Decision: a hand-written Prometheus encoder, not `prometheus/client_golang`
+
+**Why:** the official client pulls in roughly ten modules, and MinDB's entire
+dependency list is FlatBuffers, gRPC and `x/sys`. What MinDB uses from a metrics
+library is three types and the text format, which is ~500 lines in
+`pkg/metrics` with its own tests, including one that pins the output byte for
+byte. Every update is one atomic operation, so the paths being measured never
+take a lock to record that they ran.
+
+**What it cost:** no OpenMetrics, no exemplars, no protobuf exposition. A
+histogram's `_sum` can trail its buckets by an in-flight observation, which
+client_golang avoids with a hot/cold double buffer; `_count` is derived from the
+buckets at scrape time instead of kept separately, so the invariant Prometheus
+actually checks — `+Inf` bucket equals `_count` — always holds.
+
+### Decision: the engine reports through a `core.Observer` interface
+
+**Why:** `pkg/core` stays free of any metrics dependency, and a nil observer —
+every engine built by `New` or `Load`, and every existing test — costs a nil
+check and nothing else: no clock reads. Observers are called after locks are
+released, so a slow one delays its own caller and never the next group-commit
+batch.
+
+**What it cost:** two clock reads, an interface call and a histogram update per
+write and per search when metrics are on — a few hundred nanoseconds
+(`BenchmarkHistogramObserve` is ~130 ns contended) against an fsync measured in
+hundreds of microseconds and a scan in milliseconds.
+
+### Decision: time `write()` and `fsync` separately, and count records per sync
+
+**Why:** they fail differently. A slow `write()` is the kernel throttling dirty
+pages; a slow fsync is the device. Records per sync is the group-commit batch
+size, the one number that says whether batching is happening at all. Records
+and bytes are counted as they are buffered and claimed by whichever sync takes
+them — leader or rotation — so each is counted exactly once even when a
+rotation runs during a leader's fsync.
+
+### Decision: measure lock wait on the write path
+
+**Why:** it was added after the first load test, when batch size stayed small
+under many writers while fsync stayed fast, and nothing else on the dashboard
+explained the slow inserts. `mindb_write_apply_duration_seconds` did: most of
+each Insert was waiting for the slab's exclusive lock behind in-flight
+searches, which also serialized writers before they reached the log. Numbers
+are in the README.
+
+### Decision: device metrics come from `/proc/diskstats`, found by `stat` on the data directory
+
+**Why:** `stat` gives the device number of the filesystem the snapshot and log
+live on; `/proc/diskstats` is keyed by the same major:minor. If the device is a
+partition, sysfs gives the parent disk, and that is reported too: the volatile
+write cache belongs to the disk, so the flush requests that make an fsync
+durable may be counted there and not on the partition. Major 0 — overlayfs,
+tmpfs, btrfs — has no line to read, and the server logs that and carries on.
+
+**What it cost:** these counters are for the whole device, every process on it,
+so they are context rather than attribution. `/proc/self/io` is the
+attribution: `write_bytes` is what this process sent to storage, and divided by
+log bytes it is write amplification.
+
+### Decision: metrics on their own HTTP port
+
+**Why:** Prometheus scrapes HTTP/1.1, and neither existing listener speaks it.
+A separate port also keeps a slow scraper off the data path, and lets a network
+policy expose metrics to the monitoring namespace without exposing the data
+service. Same reasoning as the health port.
+
+---
+
+## Kubernetes
+
+### Decision: a one-replica StatefulSet, not a Deployment
+
+**Why:** the pod owns its data. A StatefulSet gives `mindb-0` a
+PersistentVolumeClaim that follows it across restarts and reschedules, and it
+never runs two copies of that pod at once. A Deployment's rolling update starts
+the new pod before stopping the old one, which against a ReadWriteOnce volume
+either blocks or, on a fresh claim, boots an empty database. One replica
+because there is no replication: a second pod would be a second, unrelated
+database behind the same Service.
+
+### Decision: liveness checks `/metrics`, readiness checks the health service
+
+**Why:** readiness is the WAL. It goes NOT_SERVING on the first failed fsync
+and stays there, and that should drain writes away. Liveness must not follow
+it: restarting would discard an in-memory engine that is still correct, to
+replay a log that can no longer be trusted, and the pod would come back to the
+same disk. `/metrics` answers as long as the process is not wedged, and since
+it takes the engine's read lock, a deadlock fails it. A startup probe with a
+five-minute budget covers snapshot load and log replay, during which the
+health port is not open at all.
+
+### Decision: two Services, one of them publishing unready pods
+
+**Why:** the governing headless Service sets `publishNotReadyAddresses`, so
+`mindb-0.mindb` resolves while the pod is unready and Prometheus keeps
+scraping it — a pod whose log has faulted is the one whose metrics matter
+most. Clients use `mindb-grpc`, a normal Service that only routes to ready
+pods.
+
+### Decision: `terminationGracePeriodSeconds: 60`
+
+**Why:** on SIGTERM the server drains and then writes a final snapshot, which
+at 100k x 768 is a few hundred MB to fsync. The default 30 s is tight on a slow
+volume. Running out is not data loss — the log is still there — but it turns
+the next start into a full replay.
+
+---
+
 ## What was tried and explicitly rejected
 
 Kept here so nobody re-proposes them without knowing why they didn't work.

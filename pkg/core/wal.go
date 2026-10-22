@@ -9,6 +9,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // wal is an append-only log of the operations that mutate the slab.
@@ -58,6 +59,17 @@ type wal struct {
 	syncedSeq uint64
 	syncing   bool
 	syncErr   error
+
+	// pendingRecords and pendingBytes count what has been buffered since the
+	// last sync began. Whichever sync picks them up — a group-commit leader or
+	// a rotation — reports them and zeroes them, so every record is counted in
+	// exactly one batch even when a rotation runs while a leader is mid-fsync.
+	pendingRecords int
+	pendingBytes   int64
+
+	// obs is set once by attachWAL, before the engine is shared, and never
+	// changed. Nil means nobody is measuring.
+	obs Observer
 
 	// healthy goes false on the first write or fsync failure and never goes back
 	// on. A retry that succeeds proves nothing: on Linux a failed fsync may have
@@ -199,6 +211,8 @@ func (w *wal) buffer(rec []byte) uint64 {
 	defer w.mu.Unlock()
 
 	w.nextSeq++
+	w.pendingRecords++
+	w.pendingBytes += int64(len(rec))
 	if _, err := w.buf.Write(rec); err != nil {
 		w.fault()
 		w.syncErr = fmt.Errorf("mindb: append to write-ahead log: %w", err)
@@ -213,10 +227,16 @@ func (w *wal) buffer(rec []byte) uint64 {
 // with the lock released so later writers keep appending. They land in the next
 // batch. Nothing here is timer-driven — a lone writer syncs immediately, and
 // under load the batch is however many writers arrived during the last fsync.
+//
+// Only the leader reports to the observer, and only after releasing the lock,
+// so a slow observer can delay its own caller but never the next batch.
 func (w *wal) syncTo(seq uint64) error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 
+	var (
+		ev  WALSync
+		led bool
+	)
 	for w.syncedSeq < seq {
 		if w.syncing {
 			w.cond.Wait()
@@ -225,15 +245,32 @@ func (w *wal) syncTo(seq uint64) error {
 
 		w.syncing = true
 		target := w.nextSeq
+		led = true
+		ev = WALSync{Records: w.pendingRecords, Bytes: w.pendingBytes}
+		w.pendingRecords, w.pendingBytes = 0, 0
+
+		var start time.Time
+		if w.obs != nil {
+			start = time.Now()
+		}
 		err := w.flushLocked()
+		if w.obs != nil {
+			ev.Write = time.Since(start)
+		}
 
 		if err == nil {
+			if w.obs != nil {
+				start = time.Now()
+			}
 			if w.syncAlone {
 				err = w.f.Sync()
 			} else {
 				w.mu.Unlock()
 				err = w.f.Sync()
 				w.mu.Lock()
+			}
+			if w.obs != nil {
+				ev.Fsync = time.Since(start)
 			}
 		}
 
@@ -246,9 +283,16 @@ func (w *wal) syncTo(seq uint64) error {
 		case w.healthy.Load():
 			w.syncErr = nil
 		}
+		ev.Err = err
 		w.cond.Broadcast()
 	}
-	return w.syncErr
+	err := w.syncErr
+	w.mu.Unlock()
+
+	if led && w.obs != nil {
+		w.obs.WALSync(ev)
+	}
+	return err
 }
 
 // flushLocked empties the write buffer into the file. Caller must hold w.mu.
@@ -267,16 +311,33 @@ func (w *wal) flushLocked() error {
 // definite point in the write order rather than in the middle of a batch.
 func (w *wal) rotate(run runID) (retired string, err error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 
+	ev := WALSync{Records: w.pendingRecords, Bytes: w.pendingBytes, Rotation: true}
+	retired, err = w.rotateLocked(run, &ev)
+	w.mu.Unlock()
+
+	if w.obs != nil {
+		ev.Err = err
+		w.obs.WALSync(ev)
+	}
+	return retired, err
+}
+
+func (w *wal) rotateLocked(run runID, ev *WALSync) (retired string, err error) {
+	start := time.Now()
 	if err = w.flushLocked(); err != nil {
 		w.fault()
 		return "", fmt.Errorf("mindb: flush write-ahead log before rotate: %w", err)
 	}
+	ev.Write = time.Since(start)
+
+	start = time.Now()
 	if err = w.f.Sync(); err != nil {
 		w.fault()
 		return "", fmt.Errorf("mindb: fsync write-ahead log before rotate: %w", err)
 	}
+	ev.Fsync = time.Since(start)
+
 	if err = w.f.Close(); err != nil {
 		w.fault()
 		return "", fmt.Errorf("mindb: close write-ahead log: %w", err)
@@ -286,6 +347,7 @@ func (w *wal) rotate(run runID) (retired string, err error) {
 	// satisfied by the rotation itself.
 	retired = segmentName(w.base, w.seg)
 	w.syncedSeq = w.nextSeq
+	w.pendingRecords, w.pendingBytes = 0, 0
 	w.syncErr = nil
 	w.cond.Broadcast()
 

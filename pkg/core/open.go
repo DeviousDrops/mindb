@@ -23,6 +23,10 @@ type Options struct {
 	// cannot be written or synced. The server uses it to fail its readiness
 	// probe. Never called again, because the log never becomes healthy again.
 	OnWALFault func()
+
+	// Observer, if set, receives timings for every log sync, search and
+	// snapshot. See Observer.
+	Observer Observer
 }
 
 // Open builds an engine from whatever durable state exists: a snapshot, a log
@@ -42,6 +46,10 @@ func Open(opts Options) (*Engine, WALRecovery, error) {
 	if err != nil {
 		return nil, rec, err
 	}
+	// Set before replay and before the engine is returned, so no goroutine can
+	// see it change. Replay itself is not observed: it goes through store(),
+	// not Search or the log.
+	e.obs = opts.Observer
 	if opts.WAL == "" {
 		return e, rec, nil
 	}
@@ -126,6 +134,7 @@ func (e *Engine) attachWAL(opts Options, expect runID, haveExpect bool) error {
 	if err != nil {
 		return err
 	}
+	w.obs = opts.Observer
 	e.wal = w
 	return nil
 }

@@ -1,0 +1,70 @@
+# MinDB + Prometheus + Grafana on one machine.
+#
+#   docker compose -f deploy/observability/docker-compose.yml up --build
+#   go run ./cmd/mindb-load -addr localhost:50051 -dims 768 -writers 64
+#
+# Then open http://localhost:3000 (anonymous viewer access is on) and the
+# "MinDB" dashboard. Prometheus itself is on http://localhost:9090.
+#
+# Disk metrics need the data directory on a real block device. A named volume
+# lives under Docker's data root on the host's filesystem, so it is, and the
+# container's /proc/diskstats is the host's — the kernel does not namespace it.
+# Under Docker Desktop the "host" is its Linux VM, so the device you see is the
+# VM's virtual disk.
+name: mindb-observability
+
+services:
+  # The image runs as uid 65532, and a fresh named volume comes up owned by
+  # root. One chown before the server starts fixes that without a root process
+  # in the server's own container.
+  init-data:
+    image: busybox:1.36
+    command: ["chown", "-R", "65532:65532", "/data"]
+    volumes:
+      - mindb-data:/data
+
+  mindb:
+    depends_on:
+      init-data:
+        condition: service_completed_successfully
+    build:
+      context: ../..
+      dockerfile: build/Dockerfile
+    command:
+      - -dims=768
+      - -capacity=100000
+      - -snapshot=/data/snap.mindb
+      - -snapshot-interval=1m
+    ports:
+      - "50051:50051"
+      - "50052:50052"
+      - "50053:50053"
+    volumes:
+      - mindb-data:/data
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on: [mindb]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/mindb.json
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus]
+
+volumes:
+  mindb-data:

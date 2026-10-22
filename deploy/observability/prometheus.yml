@@ -1,0 +1,10 @@
+global:
+  # Fast enough to see a ramp step in mindb-load's default 20 s, slow enough
+  # that a scrape is nothing next to the work it measures.
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: mindb
+    static_configs:
+      - targets: ["mindb:50053"]

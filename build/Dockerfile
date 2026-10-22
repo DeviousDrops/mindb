@@ -40,8 +40,9 @@ COPY --from=build /out/mindb-server /mindb-server
 
 # 50051 is the FlatBuffers data service; 50052 is grpc.health.v1.Health, which
 # is on its own listener because the data server forces a codec that would
-# panic on a protobuf health response.
-EXPOSE 50051 50052
+# panic on a protobuf health response. 50053 is Prometheus /metrics over plain
+# HTTP.
+EXPOSE 50051 50052 50053
 
 # Snapshots and log segments go here. Deliberately not a VOLUME: that creates
 # anonymous volumes under `docker run` and does nothing for Kubernetes. Mount

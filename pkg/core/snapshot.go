@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 // Snapshot file format. All integers little-endian.
@@ -62,6 +63,22 @@ var (
 // read-modify-write, so re-applying a range that overlaps the snapshot converges
 // on the same state.
 func (e *Engine) Save(path string) error {
+	if e.obs == nil {
+		return e.save(path)
+	}
+	start := time.Now()
+	err := e.save(path)
+	ev := SnapshotEvent{Duration: time.Since(start), Err: err}
+	if err == nil {
+		if info, statErr := os.Stat(path); statErr == nil {
+			ev.Bytes = info.Size()
+		}
+	}
+	e.obs.Snapshot(ev)
+	return err
+}
+
+func (e *Engine) save(path string) error {
 	if e.wal == nil {
 		return e.saveSnapshot(path)
 	}

@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: mindb
+    static_configs:
+      # The pod's stable name through the governing headless Service, which
+      # publishes it even while the pod is not ready.
+      - targets: ["mindb-0.mindb:50053"]

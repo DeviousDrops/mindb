@@ -2,13 +2,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -21,7 +24,9 @@ import (
 	"github.com/DeviousDrops/mindb/pkg/api"
 	"github.com/DeviousDrops/mindb/pkg/core"
 	"github.com/DeviousDrops/mindb/pkg/math"
+	"github.com/DeviousDrops/mindb/pkg/metrics"
 	"github.com/DeviousDrops/mindb/pkg/mindb"
+	"github.com/DeviousDrops/mindb/pkg/telemetry"
 )
 
 // serviceName is what the health service reports status for, alongside the
@@ -35,19 +40,21 @@ var version = "dev"
 
 // config is what the flags parse into.
 type config struct {
-	addr       string
-	healthAddr string
-	dims       int
-	capacity   int
-	snapPath   string
-	snapWait   time.Duration
-	wal        string
+	addr        string
+	healthAddr  string
+	metricsAddr string
+	dims        int
+	capacity    int
+	snapPath    string
+	snapWait    time.Duration
+	wal         string
 }
 
 func main() {
 	var cfg config
 	flag.StringVar(&cfg.addr, "addr", ":50051", "gRPC listen address")
 	flag.StringVar(&cfg.healthAddr, "health-addr", ":50052", "gRPC health service address; empty disables it")
+	flag.StringVar(&cfg.metricsAddr, "metrics-addr", ":50053", "Prometheus /metrics HTTP address; empty disables it")
 	flag.IntVar(&cfg.dims, "dims", 768, "vector dimension (ignored when a snapshot is loaded)")
 	flag.IntVar(&cfg.capacity, "capacity", 100_000, "maximum number of vectors; memory is reserved eagerly at boot")
 	flag.StringVar(&cfg.snapPath, "snapshot", "", "snapshot file path; empty disables persistence")
@@ -82,11 +89,17 @@ func run(cfg config) error {
 	healthSrv := health.NewServer()
 	healthSrv.SetServingStatus(serviceName, healthpb.HealthCheckResponse_SERVING)
 
+	// Built before the engine too, because the engine reports into it from the
+	// first write onward.
+	reg := metrics.NewRegistry()
+	tel := telemetry.New(reg)
+
 	engine, recovery, err := core.Open(core.Options{
 		Dims:     cfg.dims,
 		Capacity: cfg.capacity,
 		Snapshot: cfg.snapPath,
 		WAL:      walBase,
+		Observer: tel,
 		OnWALFault: func() {
 			// Keep serving: what is in memory is still correct and still
 			// useful. Stop advertising, though, because writes from here on
@@ -101,6 +114,7 @@ func run(cfg config) error {
 	}
 
 	logBoot(cfg, walBase, engine, recovery)
+	watch(tel, engine, cfg.snapPath)
 
 	lis, err := net.Listen("tcp", cfg.addr)
 	if err != nil {
@@ -110,7 +124,10 @@ func run(cfg config) error {
 	// Without ForceServerCodec the handlers, which return *flatbuffers.Builder,
 	// fail at request time rather than at startup. Registering it here is not
 	// optional.
-	srv := grpc.NewServer(grpc.ForceServerCodec(flatbuffers.FlatbuffersCodec{}))
+	srv := grpc.NewServer(
+		grpc.ForceServerCodec(flatbuffers.FlatbuffersCodec{}),
+		grpc.UnaryInterceptor(tel.UnaryInterceptor()),
+	)
 	mindb.RegisterVectorServiceServer(srv, api.New(engine, cfg.snapPath))
 
 	// The health service speaks protobuf, and the codec above is forced for
@@ -118,6 +135,10 @@ func run(cfg config) error {
 	// the flatbuffers codec type-asserts what it is handed to *flatbuffers.Builder
 	// and would panic on a health response. Hence a second listener, default codec.
 	healthGRPC, err := serveHealth(cfg.healthAddr, healthSrv)
+	if err != nil {
+		return err
+	}
+	metricsHTTP, err := serveMetrics(cfg.metricsAddr, reg)
 	if err != nil {
 		return err
 	}
@@ -148,6 +169,13 @@ func run(cfg config) error {
 	srv.GracefulStop()
 	if healthGRPC != nil {
 		healthGRPC.GracefulStop()
+	}
+	// Last of the listeners, so the final snapshot below is the only thing
+	// that happens unobserved. A scrape in flight gets a second to finish.
+	if metricsHTTP != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		metricsHTTP.Shutdown(ctx)
+		cancel()
 	}
 
 	// Final snapshot after GracefulStop, so no in-flight write is missed. It
@@ -202,6 +230,63 @@ func serveHealth(addr string, srv *health.Server) (*grpc.Server, error) {
 	}()
 	log.Printf("health service on %s (grpc.health.v1.Health, service %q)", addr, serviceName)
 	return g, nil
+}
+
+// serveMetrics starts the Prometheus endpoint on its own HTTP listener. An
+// empty address returns a nil server and no endpoint.
+//
+// HTTP rather than gRPC because that is what Prometheus scrapes, and its own
+// port rather than a path on an existing one because neither existing listener
+// speaks HTTP/1.1. Separate ports also keep it off the data path: a slow
+// scraper can hold a connection here without touching gRPC.
+func serveMetrics(addr string, reg *metrics.Registry) (*http.Server, error) {
+	if addr == "" {
+		log.Printf("metrics endpoint disabled")
+		return nil, nil
+	}
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen on %s for metrics: %w", addr, err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", reg.Handler())
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+	}
+	go func() {
+		if err := srv.Serve(lis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("metrics endpoint stopped: %v", err)
+		}
+	}()
+	log.Printf("metrics on http://%s/metrics", addr)
+	return srv, nil
+}
+
+// watch attaches the scrape-time collectors: engine state always, the data
+// device and this process's I/O when the platform can report them.
+func watch(tel *telemetry.Telemetry, engine *core.Engine, snapPath string) {
+	tel.WatchEngine(engine, version)
+
+	if !tel.WatchProcess() {
+		log.Printf("no per-process I/O counters here (/proc/self/io); write amplification will not be reported")
+	}
+
+	if snapPath == "" {
+		return // memory-only: there is no data device to watch
+	}
+	dir, err := filepath.Abs(filepath.Dir(snapPath))
+	if err != nil {
+		log.Printf("disk metrics off: %v", err)
+		return
+	}
+	devs, err := tel.WatchDisk(dir)
+	if err != nil {
+		log.Printf("disk metrics off: %v", err)
+		return
+	}
+	log.Printf("disk metrics: %s is on %v", dir, devs)
 }
 
 // logBoot reports what the engine came back with, including anything about the

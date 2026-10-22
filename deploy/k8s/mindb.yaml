@@ -1,0 +1,155 @@
+# MinDB as a single-replica StatefulSet.
+#
+# StatefulSet rather than Deployment because the pod owns its data: the
+# snapshot and write-ahead log live on a PersistentVolumeClaim that follows
+# mindb-0 across restarts and reschedules. A Deployment would let a rollout
+# start a second pod against the same ReadWriteOnce volume, or a new one
+# against an empty disk.
+#
+# One replica, because MinDB has no replication: a second pod would be a
+# second, unrelated database behind the same Service.
+
+# Governing headless Service. It gives the pod a stable DNS name,
+# mindb-0.mindb, and it publishes that name even while the pod is NOT ready.
+# Readiness goes false when the write-ahead log faults, which is exactly when
+# Prometheus most needs to keep scraping it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mindb
+  labels:
+    app.kubernetes.io/name: mindb
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: mindb
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+    - name: health
+      port: 50052
+      targetPort: health
+    - name: metrics
+      port: 50053
+      targetPort: metrics
+---
+# Client-facing Service. Only ready pods get traffic, so a pod whose log has
+# faulted drains out of here while still being scraped through the one above.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mindb-grpc
+  labels:
+    app.kubernetes.io/name: mindb
+spec:
+  selector:
+    app.kubernetes.io/name: mindb
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mindb
+  labels:
+    app.kubernetes.io/name: mindb
+spec:
+  serviceName: mindb
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mindb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mindb
+    spec:
+      # On SIGTERM the server stops taking traffic, drains, then writes a
+      # final snapshot. At 100k x 768 that is a few hundred MB to fsync; the
+      # default 30 s is too tight on a slow volume, and a SIGKILL halfway
+      # through costs a log replay on the next start rather than data.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # Makes the volume group-writable by 65532, which the image's
+        # nonroot user needs to create the snapshot and log.
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mindb
+          image: mindb:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - -dims=768
+            - -capacity=100000
+            - -snapshot=/data/snap.mindb
+            - -snapshot-interval=1m
+          ports:
+            - name: grpc
+              containerPort: 50051
+            - name: health
+              containerPort: 50052
+            - name: metrics
+              containerPort: 50053
+          # The health listener only starts after the snapshot is loaded and
+          # the log replayed, so startup can be long and must not be judged
+          # by the other probes. Up to five minutes.
+          startupProbe:
+            grpc:
+              port: 50052
+              service: mindb.VectorService
+            periodSeconds: 2
+            failureThreshold: 150
+          # Readiness is the WAL: NOT_SERVING once an fsync has failed. The pod
+          # leaves the mindb-grpc endpoints but keeps running and serving reads
+          # to existing connections.
+          readinessProbe:
+            grpc:
+              port: 50052
+              service: mindb.VectorService
+            periodSeconds: 5
+            failureThreshold: 2
+          # Liveness is deliberately NOT the health service. A faulted log
+          # reports NOT_SERVING forever, and restarting the pod for it would
+          # throw away a correct in-memory engine to replay a log that can no
+          # longer be trusted. /metrics answers as long as the process is not
+          # wedged: it takes the engine's read lock, so a deadlock fails it.
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            # Memory is reserved eagerly at boot: capacity x (dims x 5 + 8)
+            # bytes, ~385 MB here, before any heap. The limit is the request
+            # plus headroom for payloads and the Go heap.
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
